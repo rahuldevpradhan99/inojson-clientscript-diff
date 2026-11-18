@@ -1,0 +1,24 @@
+{
+  "name": "inojson-clientscript-diff",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Compare, edit, and convert escaped JavaScript in clientscripts (prescript, postscript, onSaveScript) for production bundles",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "serve": "python3 server.py",
+    "build": "node build.js",
+    "test": "node test/test-engine.mjs"
+  },
+  "keywords": [
+    "json-diff",
+    "clientscripts",
+    "prescript",
+    "postscript",
+    "onSaveScript",
+    "lowcode",
+    "diff-editor"
+  ],
+  "author": "Rahul Dev",
+  "license": "MIT"
+}

@@ -1,0 +1,214 @@
+/**
+ * CodeMirror Overrides & IDE Editor Styles
+ */
+
+/* Main Screen CodeMirror Panels */
+.cm-panel-mount {
+  width: 100%;
+  height: 100%;
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+}
+
+.cm-panel-mount .CodeMirror {
+  height: 100%;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.55;
+  background-color: var(--bg-input);
+}
+
+.cm-panel-mount .CodeMirror-gutters {
+  background-color: #12171f;
+  border-right: 1px solid #21262d;
+  color: #484f58;
+}
+
+/* Modal Live IDE Editor Container */
+.live-ide-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  width: 100%;
+  background-color: #0d1117;
+  overflow: hidden;
+}
+
+.editor-subnav {
+  height: 42px;
+  min-height: 42px;
+  background-color: #161b22;
+  border-bottom: 1px solid #30363d;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 16px;
+  gap: 12px;
+}
+
+.subnav-left, .subnav-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+/* Return to Diff Buttons */
+.btn-return-diff {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  background: linear-gradient(135deg, #1f6feb 0%, #238636 100%);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(31, 111, 235, 0.4);
+  transition: all 0.15s ease;
+}
+
+.btn-return-diff:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(46, 160, 67, 0.5);
+}
+
+.btn-return-diff-glow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  font-size: 11.5px;
+  font-weight: 600;
+  background-color: #238636;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  box-shadow: 0 0 10px rgba(46, 160, 67, 0.4);
+  transition: all 0.15s ease;
+}
+
+.btn-return-diff-glow:hover {
+  background-color: #2ea043;
+}
+
+.btn-done-review {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 16px;
+  font-size: 12px;
+  font-weight: 600;
+  background: #238636;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.btn-done-review:hover {
+  background: #2ea043;
+}
+
+/* Editor Type Pills */
+.editor-type-pills {
+  display: flex;
+  background-color: #0b0e14;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  padding: 2px;
+}
+
+.editor-type-btn {
+  padding: 3px 10px;
+  font-size: 11.5px;
+  font-weight: 500;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: #8b949e;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.editor-type-btn:hover {
+  color: #f0f6fc;
+}
+
+.editor-type-btn.active {
+  background-color: #21262d;
+  color: #fff;
+  font-weight: 600;
+}
+
+.editor-cursor-pos {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: #8b949e;
+}
+
+/* CodeMirror Mount inside Modal */
+.codemirror-mount {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+}
+
+.codemirror-mount .CodeMirror {
+  height: 100%;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 22px;
+  background-color: #0b0e14;
+}
+
+.codemirror-mount .CodeMirror-gutters {
+  background-color: #12171f;
+  border-right: 1px solid #21262d;
+  color: #484f58;
+}
+
+.codemirror-mount .CodeMirror-activeline-background {
+  background-color: rgba(56, 139, 253, 0.08);
+}
+
+.codemirror-mount .CodeMirror-matchingbracket {
+  background-color: rgba(56, 139, 253, 0.35);
+  color: #fff !important;
+  font-weight: 700;
+  outline: 1px solid #58a6ff;
+}
+
+/* Editor Bottom Bar */
+.editor-bottom-bar {
+  height: 38px;
+  min-height: 38px;
+  background-color: #161b22;
+  border-top: 1px solid #21262d;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 16px;
+}
+
+.editor-hint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: #8b949e;
+}
+
+.editor-hint svg {
+  color: #58a6ff;
+}
+
+.editor-hint strong {
+  color: #79c0ff;
+}
