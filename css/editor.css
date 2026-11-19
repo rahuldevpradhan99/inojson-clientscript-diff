@@ -1,0 +1,379 @@
+/**
+ * CodeMirror Overrides & IDE Editor Styles
+ */
+
+/* Main Screen CodeMirror & Monaco Panels */
+.cm-panel-mount,
+.monaco-mount {
+  width: 100%;
+  height: 100%;
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  overflow: hidden;
+}
+
+.monaco-editor,
+.monaco-editor-background {
+  background-color: #0b0e14 !important;
+}
+
+.monaco-editor .margin {
+  background-color: #10141d !important;
+}
+
+.monaco-editor .monaco-scrollable-element .scrollbar .slider {
+  background: rgba(110, 118, 129, 0.35) !important;
+  border-radius: 4px;
+}
+
+.cm-panel-mount .CodeMirror {
+  height: 100%;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.55;
+  background-color: var(--bg-input);
+}
+
+.cm-panel-mount .CodeMirror-gutters {
+  background-color: #12171f;
+  border-right: 1px solid #21262d;
+  color: #484f58;
+}
+
+/* Modal Live IDE Editor Container */
+.live-ide-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  width: 100%;
+  background-color: #0d1117;
+  overflow: hidden;
+}
+
+.editor-subnav {
+  height: 42px;
+  min-height: 42px;
+  background-color: #161b22;
+  border-bottom: 1px solid #30363d;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 16px;
+  gap: 12px;
+}
+
+.subnav-left, .subnav-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+/* Return to Diff Buttons */
+.btn-return-diff {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  background: linear-gradient(135deg, #1f6feb 0%, #238636 100%);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(31, 111, 235, 0.4);
+  transition: all 0.15s ease;
+}
+
+.btn-return-diff:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(46, 160, 67, 0.5);
+}
+
+.btn-return-diff-glow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  font-size: 11.5px;
+  font-weight: 600;
+  background-color: #238636;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  box-shadow: 0 0 10px rgba(46, 160, 67, 0.4);
+  transition: all 0.15s ease;
+}
+
+.btn-return-diff-glow:hover {
+  background-color: #2ea043;
+}
+
+.btn-done-review {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 16px;
+  font-size: 12px;
+  font-weight: 600;
+  background: #238636;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.btn-done-review:hover {
+  background: #2ea043;
+}
+
+/* Editor Type Pills */
+.editor-type-pills {
+  display: flex;
+  background-color: #0b0e14;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  padding: 2px;
+}
+
+.editor-type-btn {
+  padding: 3px 10px;
+  font-size: 11.5px;
+  font-weight: 500;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: #8b949e;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.editor-type-btn:hover {
+  color: #f0f6fc;
+}
+
+.editor-type-btn.active {
+  background-color: #21262d;
+  color: #fff;
+  font-weight: 600;
+}
+
+.editor-cursor-pos {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: #8b949e;
+}
+
+/* CodeMirror Mount inside Modal */
+.codemirror-mount {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+}
+
+.codemirror-mount .CodeMirror {
+  height: 100%;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 22px;
+  background-color: #0b0e14;
+}
+
+.codemirror-mount .CodeMirror-gutters {
+  background-color: #12171f;
+  border-right: 1px solid #21262d;
+  color: #484f58;
+}
+
+.codemirror-mount .CodeMirror-activeline-background {
+  background-color: rgba(56, 139, 253, 0.08);
+}
+
+.codemirror-mount .CodeMirror-matchingbracket {
+  background-color: rgba(56, 139, 253, 0.35);
+  color: #fff !important;
+  font-weight: 700;
+  outline: 1px solid #58a6ff;
+}
+
+/* Editor Bottom Bar */
+.editor-bottom-bar {
+  height: 38px;
+  min-height: 38px;
+  background-color: #161b22;
+  border-top: 1px solid #21262d;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 16px;
+}
+
+.editor-hint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: #8b949e;
+}
+
+.editor-hint svg {
+  color: #58a6ff;
+}
+
+.editor-hint strong {
+  color: #79c0ff;
+}
+
+/* ==========================================================================
+   Modal Live Editor Real-time Diagnostics Bar & Drawer
+   ========================================================================== */
+
+.editor-val-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 12px;
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.editor-val-badge.val-ok {
+  background-color: rgba(46, 160, 67, 0.15);
+  color: #3fb950;
+  border: 1px solid rgba(46, 160, 67, 0.3);
+}
+
+.editor-val-badge.val-err {
+  background-color: rgba(248, 81, 73, 0.2);
+  color: #ff7b72;
+  border: 1px solid rgba(248, 81, 73, 0.4);
+  font-weight: 600;
+  animation: valBadgePulse 2s infinite;
+}
+
+@keyframes valBadgePulse {
+  0% { transform: scale(1); }
+  50% { transform: scale(1.03); }
+  100% { transform: scale(1); }
+}
+
+.editor-diagnostics-drawer {
+  background-color: #141822;
+  border-bottom: 2px solid #f85149;
+  padding: 10px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 180px;
+  overflow-y: auto;
+  font-size: 12px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+}
+
+.editor-diagnostics-drawer.hidden {
+  display: none;
+}
+
+.diag-drawer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.diag-drawer-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  color: #ff7b72;
+}
+
+.diag-drawer-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.btn-diag-jump {
+  padding: 3px 8px;
+  background-color: #21262d;
+  color: #f0f6fc;
+  border: 1px solid #30363d;
+  border-radius: 4px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.btn-diag-jump:hover {
+  background-color: #30363d;
+}
+
+.diag-drawer-content {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.diag-drawer-snippet {
+  flex: 1;
+  background-color: #0b0e14;
+  border: 1px solid #21262d;
+  border-radius: 5px;
+  padding: 6px 10px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-x: auto;
+}
+
+.diag-drawer-advice {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11.5px;
+}
+
+.diag-advice-why {
+  color: #c9d1d9;
+}
+
+.diag-advice-fix {
+  color: #7ee787;
+  font-weight: 500;
+}
+
+/* Diff View Scripts Validation Banner */
+.val-diff-status-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 16px;
+  background-color: #10141d;
+  border-bottom: 1px solid #21262d;
+  font-size: 11.5px;
+}
+
+.val-diff-status-col {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.val-diff-status-col.error {
+  color: #ff7b72;
+  font-weight: 600;
+}
+
+.val-diff-status-col.valid {
+  color: #3fb950;
+}
+
