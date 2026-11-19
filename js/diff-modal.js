@@ -9,6 +9,7 @@ import { JsHighlighter } from "./js-highlighter.js";
 import { JsBeautifier } from "./js-beautifier.js";
 import { JsonEngine } from "./json-engine.js";
 import { Validator } from "./validator.js";
+import { monacoManager } from "./monaco-manager.js";
 
 export class DiffModal {
   constructor(options = {}) {
@@ -28,6 +29,7 @@ export class DiffModal {
     this.modifiedRightScripts = new Map(); // scriptKey -> editedReadableText (New)
     this.mergeHistory = []; // Undo stack: [{ scriptKey, leftText, rightText }]
     this.cmModalInstance = null;
+    this.modalMonacoInstance = null;
     this.currentEditorDiag = null;
     this.activeCmErrorLine = null;
 
@@ -811,7 +813,7 @@ export class DiffModal {
         <div class="editor-bottom-bar">
           <div class="editor-hint">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
-            <span>Full IDE Mode: auto-closing brackets, matching pairs, 4-space indent, syntax coloring. Click <strong>"Back to Diff State"</strong> to review changes &amp; merge line-by-line.</span>
+            <span><strong>VS Code Monaco IDE</strong>: Real IntelliSense, Code Folding, Minimap, Rainbow Brackets &amp; Command Palette (<strong>F1</strong> / <strong>Cmd+Shift+P</strong>).</span>
           </div>
           <button class="btn-done-review" id="btnBottomDoneReview">
             <span>✓ Done Editing ➔ Return to Diff</span>
@@ -822,8 +824,63 @@ export class DiffModal {
 
     const mountEl = container.querySelector("#modalCodeMirrorMount");
 
-    // Initialize CodeMirror
-    if (typeof CodeMirror !== "undefined") {
+    // Live change sync & validation runner
+    const runValidation = codeValue => {
+      const val =
+        codeValue !== undefined
+          ? codeValue
+          : this.modalMonacoInstance
+          ? this.modalMonacoInstance.getValue()
+          : this.cmModalInstance
+          ? this.cmModalInstance.getValue()
+          : "";
+
+      if (this.editorSubMode === "js") {
+        this.modifiedRightScripts.set(this.activeScriptKey, val);
+        const diag = Validator.validateJs(val);
+        this.updateEditorDiagnostics(diag);
+      } else {
+        try {
+          this.rightJsonObj = JSON.parse(val);
+          this.rightBlocks = JsonEngine.findAllClientScripts(this.rightJsonObj);
+        } catch (e) {}
+        const diag = Validator.validateJson(val);
+        this.updateEditorDiagnostics(diag);
+      }
+    };
+
+    // 1. Primary: Initialize VS Code Monaco Editor if loaded
+    if (monacoManager && monacoManager.isReady) {
+      mountEl.innerHTML = "";
+      this.cmModalInstance = null;
+
+      this.modalMonacoInstance = monacoManager.create(mountEl, {
+        value: initialCode,
+        language: isJsMode ? "javascript" : "json",
+        tabSize: isJsMode ? 4 : 2,
+        minimap: true
+      });
+
+      // Cursor position tracking
+      this.modalMonacoInstance.onDidChangeCursorPosition(e => {
+        const posEl = container.querySelector("#editorCursorPos");
+        if (posEl) posEl.textContent = `Ln ${e.position.lineNumber}, Col ${e.position.column}`;
+      });
+
+      let debounceTimer = null;
+      this.modalMonacoInstance.onDidChangeModelContent(() => {
+        clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(() => runValidation(), 150);
+      });
+
+      setTimeout(() => {
+        this.modalMonacoInstance.layout();
+        runValidation();
+      }, 60);
+    }
+    // 2. Fallback: Initialize CodeMirror if Monaco is not available
+    else if (typeof CodeMirror !== "undefined") {
+      this.modalMonacoInstance = null;
       this.cmModalInstance = CodeMirror(mountEl, {
         value: initialCode,
         mode: isJsMode ? "javascript" : { name: "javascript", json: true },
@@ -845,28 +902,10 @@ export class DiffModal {
         if (posEl) posEl.textContent = `Ln ${pos.line + 1}, Col ${pos.ch + 1}`;
       });
 
-      // Live change sync & validation
-      const runValidation = () => {
-        if (!this.cmModalInstance) return;
-        const val = this.cmModalInstance.getValue();
-        if (this.editorSubMode === "js") {
-          this.modifiedRightScripts.set(this.activeScriptKey, val);
-          const diag = Validator.validateJs(val);
-          this.updateEditorDiagnostics(diag);
-        } else {
-          try {
-            this.rightJsonObj = JSON.parse(val);
-            this.rightBlocks = JsonEngine.findAllClientScripts(this.rightJsonObj);
-          } catch (e) {}
-          const diag = Validator.validateJson(val);
-          this.updateEditorDiagnostics(diag);
-        }
-      };
-
       let debounceTimer = null;
       this.cmModalInstance.on("change", () => {
         clearTimeout(debounceTimer);
-        debounceTimer = setTimeout(runValidation, 150);
+        debounceTimer = setTimeout(() => runValidation(), 150);
       });
 
       setTimeout(() => {
@@ -874,7 +913,7 @@ export class DiffModal {
         runValidation();
       }, 60);
     } else {
-      // Fallback textarea if CodeMirror script isn't loaded
+      // Fallback textarea if no editor scripts are loaded
       mountEl.innerHTML = `<textarea class="code-textarea" id="scriptTextarea" style="width:100%;height:100%;">${initialCode}</textarea>`;
       const ta = mountEl.querySelector("#scriptTextarea");
       ta.addEventListener("input", () => {
@@ -921,6 +960,11 @@ export class DiffModal {
 
     // Auto-Format within editor
     container.querySelector("#btnFormatEditorCode")?.addEventListener("click", () => {
+      if (this.modalMonacoInstance) {
+        this.modalMonacoInstance.getAction("editor.action.formatDocument")?.run();
+        this.showToast("⚡ Formatted code with VS Code Monaco engine!");
+        return;
+      }
       if (!this.cmModalInstance) return;
       const val = this.cmModalInstance.getValue();
       let formatted = "";
@@ -1163,10 +1207,17 @@ export class DiffModal {
   }
 
   jumpToErrorInEditor(line = 1, col = 1) {
-    if (!this.cmModalInstance) return;
-    this.cmModalInstance.setCursor({ line: Math.max(0, line - 1), ch: Math.max(0, col - 1) });
-    this.cmModalInstance.scrollIntoView({ line: Math.max(0, line - 1), ch: Math.max(0, col - 1) }, 100);
-    this.cmModalInstance.focus();
+    if (this.modalMonacoInstance) {
+      this.modalMonacoInstance.revealLineInCenter(line);
+      this.modalMonacoInstance.setPosition({ lineNumber: line, column: col });
+      this.modalMonacoInstance.focus();
+      return;
+    }
+    if (this.cmModalInstance) {
+      this.cmModalInstance.setCursor({ line: Math.max(0, line - 1), ch: Math.max(0, col - 1) });
+      this.cmModalInstance.scrollIntoView({ line: Math.max(0, line - 1), ch: Math.max(0, col - 1) }, 100);
+      this.cmModalInstance.focus();
+    }
   }
 
   escapeHtml(str) {

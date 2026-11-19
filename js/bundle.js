@@ -1055,6 +1055,289 @@ const Validator = {
 };
 
 
+/* --- js/monaco-manager.js --- */
+/**
+ * Monaco Editor Manager for InoJson Studio
+ * Provides seamless VS Code Monaco editor integration with IntelliSense,
+ * Code Folding, Minimap, Multi-cursor, JSON schema validation, and low-code script typing.
+ * Falls back gracefully to CodeMirror if Monaco CDN is unreachable or offline.
+ */
+
+class MonacoManager {
+  constructor() {
+    this.isReady = false;
+    this.isLoading = false;
+    this.readyCallbacks = [];
+    this.instances = new Map(); // id -> editorInstance
+    this.init();
+  }
+
+  /**
+   * Initializes Monaco AMD loader from CDN with safe cross-origin blob workers
+   */
+  init() {
+    if (typeof window === "undefined") return;
+
+    if (window.monaco && window.monaco.editor) {
+      this.isReady = true;
+      this.configureMonacoDefaults();
+      return;
+    }
+
+    if (typeof window.require !== "undefined" && window.require.config) {
+      this.loadMonacoWithAmd();
+    } else {
+      // Dynamically inject loader if not yet present in HTML
+      this.injectMonacoLoader();
+    }
+  }
+
+  injectMonacoLoader() {
+    if (this.isLoading) return;
+    this.isLoading = true;
+
+    const existingScript = document.querySelector('script[src*="monaco-editor"]');
+    if (existingScript) {
+      existingScript.addEventListener("load", () => this.loadMonacoWithAmd());
+      return;
+    }
+
+    const script = document.createElement("script");
+    script.src = "https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs/loader.min.js";
+    script.async = true;
+    script.onload = () => {
+      this.loadMonacoWithAmd();
+    };
+    script.onerror = () => {
+      console.warn("Monaco loader failed to load. Falling back to CodeMirror.");
+      this.isLoading = false;
+    };
+    document.head.appendChild(script);
+  }
+
+  loadMonacoWithAmd() {
+    try {
+      window.require.config({
+        paths: {
+          vs: "https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs"
+        }
+      });
+
+      // Inline blob workers enable Monaco workers to run on GitHub Pages & localhost without CORS errors
+      window.MonacoEnvironment = {
+        getWorkerUrl: function (workerId, label) {
+          const proxyScript = `
+            self.MonacoEnvironment = {
+              baseUrl: 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/'
+            };
+            importScripts('https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs/base/worker/workerMain.js');
+          `;
+          return `data:text/javascript;charset=utf-8,${encodeURIComponent(proxyScript)}`;
+        }
+      };
+
+      window.require(["vs/editor/editor.main"], () => {
+        this.isReady = true;
+        this.isLoading = false;
+        this.configureMonacoDefaults();
+        this.readyCallbacks.forEach(cb => {
+          try {
+            cb(window.monaco);
+          } catch (e) {
+            console.error("Monaco onReady callback error:", e);
+          }
+        });
+        this.readyCallbacks = [];
+      });
+    } catch (err) {
+      console.warn("Error configuring Monaco AMD loader:", err);
+      this.isLoading = false;
+    }
+  }
+
+  /**
+   * Registers custom TypeScript/JavaScript definitions for low-code scripts
+   * giving developers real IntelliSense for editor.showAlert, editor.askToConfirm,
+   * model properties, and low-code utilities.
+   */
+  configureMonacoDefaults() {
+    if (!window.monaco || !window.monaco.languages || !window.monaco.languages.typescript) {
+      return;
+    }
+
+    const ts = window.monaco.languages.typescript;
+
+    // JavaScript compiler options
+    ts.javascriptDefaults.setDiagnosticsOptions({
+      noSemanticValidation: false,
+      noSyntaxValidation: false
+    });
+
+    ts.javascriptDefaults.setCompilerOptions({
+      target: ts.ScriptTarget.ES2022,
+      allowNonTextFiles: false,
+      allowJs: true,
+      checkJs: false
+    });
+
+    // Low-code SDK Type Definitions for autocomplete
+    const lowCodeDts = `
+      interface StepperViewRef {
+        currentSectionKey?: string;
+        currentStepIndex?: number;
+      }
+
+      interface AppService {
+        stepperViewRef?: StepperViewRef;
+        [key: string]: any;
+      }
+
+      interface LowCodeEditor {
+        /**
+         * Display a notification banner to the user
+         */
+        showAlert(title: string, message: string, type?: 'info' | 'warning' | 'error' | 'success'): void;
+
+        /**
+         * Prompt user for modal confirmation before executing an action
+         */
+        askToConfirm(
+          show: boolean,
+          message: string,
+          type?: string,
+          flag?: boolean,
+          opt1?: string,
+          opt2?: string,
+          opt3?: boolean,
+          btnText?: string,
+          color?: string
+        ): boolean;
+
+        /**
+         * Extract business process configuration record value
+         */
+        getBPCRecordValue(model: any): any;
+
+        /**
+         * Whether current execution is Save & Submit
+         */
+        isSaveAndSubmit?: boolean;
+
+        /**
+         * Low-code application services
+         */
+        appService?: AppService;
+
+        [key: string]: any;
+      }
+
+      /**
+       * Low-code Editor Runtime Instance
+       */
+      declare const editor: LowCodeEditor;
+
+      /**
+       * Active Form Data Model containing submitted fields and step statuses
+       */
+      declare const model: Record<string, any>;
+
+      /**
+       * Active Form Field Definitions and controls
+       */
+      declare const fieldList: Record<string, any>;
+
+      /**
+       * Business Process Configuration
+       */
+      declare const appealConfig: Record<string, any>;
+    `;
+
+    ts.javascriptDefaults.addExtraLib(lowCodeDts, "ts:filename/inojson-lowcode.d.ts");
+  }
+
+  /**
+   * Register a callback to be called when Monaco is ready
+   */
+  onReady(cb) {
+    if (this.isReady && window.monaco) {
+      cb(window.monaco);
+    } else {
+      this.readyCallbacks.push(cb);
+    }
+  }
+
+  /**
+   * Create a full-featured VS Code Monaco editor instance
+   */
+  create(mountEl, options = {}) {
+    if (!this.isReady || !window.monaco) return null;
+
+    const {
+      value = "",
+      language = "json",
+      readOnly = false,
+      tabSize = language === "json" ? 2 : 4,
+      minimap = true,
+      onChange = null
+    } = options;
+
+    const editor = window.monaco.editor.create(mountEl, {
+      value,
+      language,
+      theme: "vs-dark",
+      automaticLayout: true,
+      readOnly,
+      tabSize,
+      insertSpaces: true,
+      fontSize: 13,
+      fontFamily: "'Fira Code', 'JetBrains Mono', SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+      fontLigatures: true,
+      lineNumbers: "on",
+      minimap: { enabled: minimap },
+      glyphMargin: true,
+      folding: true,
+      foldingHighlight: true,
+      showFoldingControls: "always",
+      renderLineHighlight: "all",
+      matchBrackets: "always",
+      autoClosingBrackets: "always",
+      autoClosingQuotes: "always",
+      bracketPairColorization: { enabled: true },
+      guides: {
+        bracketPairs: true,
+        indentation: true
+      },
+      suggest: {
+        showKeywords: true,
+        showSnippets: true,
+        showFunctions: true
+      },
+      quickSuggestions: {
+        other: true,
+        comments: false,
+        strings: true
+      },
+      scrollBeyondLastLine: false,
+      formatOnPaste: true,
+      formatOnType: true,
+      contextmenu: true,
+      wordWrap: "off",
+      padding: { top: 8, bottom: 8 }
+    });
+
+    if (typeof onChange === "function") {
+      editor.onDidChangeModelContent(() => {
+        onChange(editor.getValue());
+      });
+    }
+
+    return editor;
+  }
+}
+
+const monacoManager = new MonacoManager();
+
+
 /* --- js/json-engine.js --- */
 /**
  * JSON Engine for InoJson Script Compare & Diff
@@ -1731,6 +2014,7 @@ const DiffEngine = {
 
 
 
+
 class DiffModal {
   constructor(options = {}) {
     this.container = null;
@@ -1749,6 +2033,7 @@ class DiffModal {
     this.modifiedRightScripts = new Map(); // scriptKey -> editedReadableText (New)
     this.mergeHistory = []; // Undo stack: [{ scriptKey, leftText, rightText }]
     this.cmModalInstance = null;
+    this.modalMonacoInstance = null;
     this.currentEditorDiag = null;
     this.activeCmErrorLine = null;
 
@@ -2532,7 +2817,7 @@ class DiffModal {
         <div class="editor-bottom-bar">
           <div class="editor-hint">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
-            <span>Full IDE Mode: auto-closing brackets, matching pairs, 4-space indent, syntax coloring. Click <strong>"Back to Diff State"</strong> to review changes &amp; merge line-by-line.</span>
+            <span><strong>VS Code Monaco IDE</strong>: Real IntelliSense, Code Folding, Minimap, Rainbow Brackets &amp; Command Palette (<strong>F1</strong> / <strong>Cmd+Shift+P</strong>).</span>
           </div>
           <button class="btn-done-review" id="btnBottomDoneReview">
             <span>✓ Done Editing ➔ Return to Diff</span>
@@ -2543,8 +2828,63 @@ class DiffModal {
 
     const mountEl = container.querySelector("#modalCodeMirrorMount");
 
-    // Initialize CodeMirror
-    if (typeof CodeMirror !== "undefined") {
+    // Live change sync & validation runner
+    const runValidation = codeValue => {
+      const val =
+        codeValue !== undefined
+          ? codeValue
+          : this.modalMonacoInstance
+          ? this.modalMonacoInstance.getValue()
+          : this.cmModalInstance
+          ? this.cmModalInstance.getValue()
+          : "";
+
+      if (this.editorSubMode === "js") {
+        this.modifiedRightScripts.set(this.activeScriptKey, val);
+        const diag = Validator.validateJs(val);
+        this.updateEditorDiagnostics(diag);
+      } else {
+        try {
+          this.rightJsonObj = JSON.parse(val);
+          this.rightBlocks = JsonEngine.findAllClientScripts(this.rightJsonObj);
+        } catch (e) {}
+        const diag = Validator.validateJson(val);
+        this.updateEditorDiagnostics(diag);
+      }
+    };
+
+    // 1. Primary: Initialize VS Code Monaco Editor if loaded
+    if (monacoManager && monacoManager.isReady) {
+      mountEl.innerHTML = "";
+      this.cmModalInstance = null;
+
+      this.modalMonacoInstance = monacoManager.create(mountEl, {
+        value: initialCode,
+        language: isJsMode ? "javascript" : "json",
+        tabSize: isJsMode ? 4 : 2,
+        minimap: true
+      });
+
+      // Cursor position tracking
+      this.modalMonacoInstance.onDidChangeCursorPosition(e => {
+        const posEl = container.querySelector("#editorCursorPos");
+        if (posEl) posEl.textContent = `Ln ${e.position.lineNumber}, Col ${e.position.column}`;
+      });
+
+      let debounceTimer = null;
+      this.modalMonacoInstance.onDidChangeModelContent(() => {
+        clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(() => runValidation(), 150);
+      });
+
+      setTimeout(() => {
+        this.modalMonacoInstance.layout();
+        runValidation();
+      }, 60);
+    }
+    // 2. Fallback: Initialize CodeMirror if Monaco is not available
+    else if (typeof CodeMirror !== "undefined") {
+      this.modalMonacoInstance = null;
       this.cmModalInstance = CodeMirror(mountEl, {
         value: initialCode,
         mode: isJsMode ? "javascript" : { name: "javascript", json: true },
@@ -2566,28 +2906,10 @@ class DiffModal {
         if (posEl) posEl.textContent = `Ln ${pos.line + 1}, Col ${pos.ch + 1}`;
       });
 
-      // Live change sync & validation
-      const runValidation = () => {
-        if (!this.cmModalInstance) return;
-        const val = this.cmModalInstance.getValue();
-        if (this.editorSubMode === "js") {
-          this.modifiedRightScripts.set(this.activeScriptKey, val);
-          const diag = Validator.validateJs(val);
-          this.updateEditorDiagnostics(diag);
-        } else {
-          try {
-            this.rightJsonObj = JSON.parse(val);
-            this.rightBlocks = JsonEngine.findAllClientScripts(this.rightJsonObj);
-          } catch (e) {}
-          const diag = Validator.validateJson(val);
-          this.updateEditorDiagnostics(diag);
-        }
-      };
-
       let debounceTimer = null;
       this.cmModalInstance.on("change", () => {
         clearTimeout(debounceTimer);
-        debounceTimer = setTimeout(runValidation, 150);
+        debounceTimer = setTimeout(() => runValidation(), 150);
       });
 
       setTimeout(() => {
@@ -2595,7 +2917,7 @@ class DiffModal {
         runValidation();
       }, 60);
     } else {
-      // Fallback textarea if CodeMirror script isn't loaded
+      // Fallback textarea if no editor scripts are loaded
       mountEl.innerHTML = `<textarea class="code-textarea" id="scriptTextarea" style="width:100%;height:100%;">${initialCode}</textarea>`;
       const ta = mountEl.querySelector("#scriptTextarea");
       ta.addEventListener("input", () => {
@@ -2642,6 +2964,11 @@ class DiffModal {
 
     // Auto-Format within editor
     container.querySelector("#btnFormatEditorCode")?.addEventListener("click", () => {
+      if (this.modalMonacoInstance) {
+        this.modalMonacoInstance.getAction("editor.action.formatDocument")?.run();
+        this.showToast("⚡ Formatted code with VS Code Monaco engine!");
+        return;
+      }
       if (!this.cmModalInstance) return;
       const val = this.cmModalInstance.getValue();
       let formatted = "";
@@ -2884,10 +3211,17 @@ class DiffModal {
   }
 
   jumpToErrorInEditor(line = 1, col = 1) {
-    if (!this.cmModalInstance) return;
-    this.cmModalInstance.setCursor({ line: Math.max(0, line - 1), ch: Math.max(0, col - 1) });
-    this.cmModalInstance.scrollIntoView({ line: Math.max(0, line - 1), ch: Math.max(0, col - 1) }, 100);
-    this.cmModalInstance.focus();
+    if (this.modalMonacoInstance) {
+      this.modalMonacoInstance.revealLineInCenter(line);
+      this.modalMonacoInstance.setPosition({ lineNumber: line, column: col });
+      this.modalMonacoInstance.focus();
+      return;
+    }
+    if (this.cmModalInstance) {
+      this.cmModalInstance.setCursor({ line: Math.max(0, line - 1), ch: Math.max(0, col - 1) });
+      this.cmModalInstance.scrollIntoView({ line: Math.max(0, line - 1), ch: Math.max(0, col - 1) }, 100);
+      this.cmModalInstance.focus();
+    }
   }
 
   escapeHtml(str) {
@@ -2931,6 +3265,7 @@ class DiffModal {
 
 
 
+
 class InoJsonApp {
   constructor() {
     this.leftTextarea = document.getElementById("leftJsonInput");
@@ -2946,6 +3281,8 @@ class InoJsonApp {
     this.compareSummaryEl = document.getElementById("compareSummary");
     this.btnOpenDiffModal = document.getElementById("btnOpenDiffModal");
 
+    this.monacoLeft = null;
+    this.monacoRight = null;
     this.cmLeft = null;
     this.cmRight = null;
     this.leftParsed = null;
@@ -2956,6 +3293,7 @@ class InoJsonApp {
 
     // Initialize Diff Modal with two-way merge support and full code editor
     this.diffModal = new DiffModal({
+      monacoManager,
       onApply: ({ baseObj, targetObj }) => {
         if (baseObj) {
           const str = JSON.stringify(baseObj, null, 2);
@@ -2975,6 +3313,7 @@ class InoJsonApp {
 
   init() {
     this.initCodeMirrorPanels();
+    this.initMonacoPanels();
     this.bindEvents();
     this.bindFileUploads();
     this.bindValidationActions();
@@ -2982,6 +3321,48 @@ class InoJsonApp {
 
     // Load initial realistic sample data
     this.loadSampleData();
+  }
+
+  initMonacoPanels() {
+    monacoManager.onReady(() => {
+      const leftVal = this.getLeftText();
+      const rightVal = this.getRightText();
+
+      // Clear CodeMirror mount elements for Monaco replacement
+      this.cmLeftMount.innerHTML = "";
+      this.cmRightMount.innerHTML = "";
+      this.cmLeft = null;
+      this.cmRight = null;
+
+      let debounceTimer = null;
+      const onChange = () => {
+        clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(() => {
+          this.leftTextarea.value = this.getLeftText();
+          this.rightTextarea.value = this.getRightText();
+          this.analyzeInputs();
+        }, 200);
+      };
+
+      this.monacoLeft = monacoManager.create(this.cmLeftMount, {
+        value: leftVal,
+        language: "json",
+        tabSize: 2,
+        minimap: true,
+        onChange
+      });
+
+      this.monacoRight = monacoManager.create(this.cmRightMount, {
+        value: rightVal,
+        language: "json",
+        tabSize: 2,
+        minimap: true,
+        onChange
+      });
+
+      this.analyzeInputs();
+      this.showToast("⚡ Activated VS Code Monaco Editor (IntelliSense, Minimap & Folding enabled)!");
+    });
   }
 
   initCodeMirrorPanels() {
@@ -3034,14 +3415,19 @@ class InoJsonApp {
   }
 
   getLeftText() {
+    if (this.monacoLeft) return this.monacoLeft.getValue();
     return this.cmLeft ? this.cmLeft.getValue() : this.leftTextarea.value;
   }
 
   getRightText() {
+    if (this.monacoRight) return this.monacoRight.getValue();
     return this.cmRight ? this.cmRight.getValue() : this.rightTextarea.value;
   }
 
   setLeftJson(text) {
+    if (this.monacoLeft) {
+      this.monacoLeft.setValue(text);
+    }
     if (this.cmLeft) {
       this.cmLeft.setValue(text);
     }
@@ -3049,6 +3435,9 @@ class InoJsonApp {
   }
 
   setRightJson(text) {
+    if (this.monacoRight) {
+      this.monacoRight.setValue(text);
+    }
     if (this.cmRight) {
       this.cmRight.setValue(text);
     }
@@ -3425,8 +3814,14 @@ class InoJsonApp {
       if (btnJump) {
         const line = parseInt(btnJump.dataset.line, 10);
         const col = parseInt(btnJump.dataset.col, 10) || 1;
+        const monaco = side === "left" ? this.monacoLeft : this.monacoRight;
         const cm = side === "left" ? this.cmLeft : this.cmRight;
-        if (cm && !isNaN(line)) {
+
+        if (monaco && !isNaN(line)) {
+          monaco.revealLineInCenter(line);
+          monaco.setPosition({ lineNumber: line, column: col });
+          monaco.focus();
+        } else if (cm && !isNaN(line)) {
           cm.setCursor({ line: Math.max(0, line - 1), ch: Math.max(0, col - 1) });
           cm.scrollIntoView({ line: Math.max(0, line - 1), ch: Math.max(0, col - 1) }, 100);
           cm.focus();
@@ -3467,8 +3862,9 @@ class InoJsonApp {
       el.title = "JSON syntax is valid, but one or more embedded scripts in clientscripts contain JavaScript syntax errors";
     } else {
       const hasCrLf = rawText.includes("\r\n");
+      const engineLabel = this.monacoLeft ? "Monaco IDE" : "IDE";
       el.className = "status-tag tag-valid";
-      el.textContent = `✓ Valid JSON • ${hasCrLf ? "CRLF (\\r\\n)" : "LF (\\n)"}`;
+      el.textContent = `✓ Valid JSON • ${engineLabel} • ${hasCrLf ? "CRLF (\\r\\n)" : "LF (\\n)"}`;
       el.title = "JSON bundle and all embedded scripts are 100% syntactically valid";
     }
   }

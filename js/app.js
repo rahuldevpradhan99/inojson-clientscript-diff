@@ -8,6 +8,7 @@ import { JsonEngine } from "./json-engine.js";
 import { SAMPLE_BASE_JSON, SAMPLE_TARGET_JSON } from "./sample-data.js";
 import { DiffModal } from "./diff-modal.js";
 import { Validator } from "./validator.js";
+import { monacoManager } from "./monaco-manager.js";
 
 class InoJsonApp {
   constructor() {
@@ -24,6 +25,8 @@ class InoJsonApp {
     this.compareSummaryEl = document.getElementById("compareSummary");
     this.btnOpenDiffModal = document.getElementById("btnOpenDiffModal");
 
+    this.monacoLeft = null;
+    this.monacoRight = null;
     this.cmLeft = null;
     this.cmRight = null;
     this.leftParsed = null;
@@ -34,6 +37,7 @@ class InoJsonApp {
 
     // Initialize Diff Modal with two-way merge support and full code editor
     this.diffModal = new DiffModal({
+      monacoManager,
       onApply: ({ baseObj, targetObj }) => {
         if (baseObj) {
           const str = JSON.stringify(baseObj, null, 2);
@@ -53,6 +57,7 @@ class InoJsonApp {
 
   init() {
     this.initCodeMirrorPanels();
+    this.initMonacoPanels();
     this.bindEvents();
     this.bindFileUploads();
     this.bindValidationActions();
@@ -60,6 +65,48 @@ class InoJsonApp {
 
     // Load initial realistic sample data
     this.loadSampleData();
+  }
+
+  initMonacoPanels() {
+    monacoManager.onReady(() => {
+      const leftVal = this.getLeftText();
+      const rightVal = this.getRightText();
+
+      // Clear CodeMirror mount elements for Monaco replacement
+      this.cmLeftMount.innerHTML = "";
+      this.cmRightMount.innerHTML = "";
+      this.cmLeft = null;
+      this.cmRight = null;
+
+      let debounceTimer = null;
+      const onChange = () => {
+        clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(() => {
+          this.leftTextarea.value = this.getLeftText();
+          this.rightTextarea.value = this.getRightText();
+          this.analyzeInputs();
+        }, 200);
+      };
+
+      this.monacoLeft = monacoManager.create(this.cmLeftMount, {
+        value: leftVal,
+        language: "json",
+        tabSize: 2,
+        minimap: true,
+        onChange
+      });
+
+      this.monacoRight = monacoManager.create(this.cmRightMount, {
+        value: rightVal,
+        language: "json",
+        tabSize: 2,
+        minimap: true,
+        onChange
+      });
+
+      this.analyzeInputs();
+      this.showToast("⚡ Activated VS Code Monaco Editor (IntelliSense, Minimap & Folding enabled)!");
+    });
   }
 
   initCodeMirrorPanels() {
@@ -112,14 +159,19 @@ class InoJsonApp {
   }
 
   getLeftText() {
+    if (this.monacoLeft) return this.monacoLeft.getValue();
     return this.cmLeft ? this.cmLeft.getValue() : this.leftTextarea.value;
   }
 
   getRightText() {
+    if (this.monacoRight) return this.monacoRight.getValue();
     return this.cmRight ? this.cmRight.getValue() : this.rightTextarea.value;
   }
 
   setLeftJson(text) {
+    if (this.monacoLeft) {
+      this.monacoLeft.setValue(text);
+    }
     if (this.cmLeft) {
       this.cmLeft.setValue(text);
     }
@@ -127,6 +179,9 @@ class InoJsonApp {
   }
 
   setRightJson(text) {
+    if (this.monacoRight) {
+      this.monacoRight.setValue(text);
+    }
     if (this.cmRight) {
       this.cmRight.setValue(text);
     }
@@ -503,8 +558,14 @@ class InoJsonApp {
       if (btnJump) {
         const line = parseInt(btnJump.dataset.line, 10);
         const col = parseInt(btnJump.dataset.col, 10) || 1;
+        const monaco = side === "left" ? this.monacoLeft : this.monacoRight;
         const cm = side === "left" ? this.cmLeft : this.cmRight;
-        if (cm && !isNaN(line)) {
+
+        if (monaco && !isNaN(line)) {
+          monaco.revealLineInCenter(line);
+          monaco.setPosition({ lineNumber: line, column: col });
+          monaco.focus();
+        } else if (cm && !isNaN(line)) {
           cm.setCursor({ line: Math.max(0, line - 1), ch: Math.max(0, col - 1) });
           cm.scrollIntoView({ line: Math.max(0, line - 1), ch: Math.max(0, col - 1) }, 100);
           cm.focus();
@@ -545,8 +606,9 @@ class InoJsonApp {
       el.title = "JSON syntax is valid, but one or more embedded scripts in clientscripts contain JavaScript syntax errors";
     } else {
       const hasCrLf = rawText.includes("\r\n");
+      const engineLabel = this.monacoLeft ? "Monaco IDE" : "IDE";
       el.className = "status-tag tag-valid";
-      el.textContent = `✓ Valid JSON • ${hasCrLf ? "CRLF (\\r\\n)" : "LF (\\n)"}`;
+      el.textContent = `✓ Valid JSON • ${engineLabel} • ${hasCrLf ? "CRLF (\\r\\n)" : "LF (\\n)"}`;
       el.title = "JSON bundle and all embedded scripts are 100% syntactically valid";
     }
   }

@@ -2,8 +2,9 @@
  * CodeMirror Overrides & IDE Editor Styles
  */
 
-/* Main Screen CodeMirror Panels */
-.cm-panel-mount {
+/* Main Screen CodeMirror & Monaco Panels */
+.cm-panel-mount,
+.monaco-mount {
   width: 100%;
   height: 100%;
   position: absolute;
@@ -11,6 +12,21 @@
   left: 0;
   right: 0;
   bottom: 0;
+  overflow: hidden;
+}
+
+.monaco-editor,
+.monaco-editor-background {
+  background-color: #0b0e14 !important;
+}
+
+.monaco-editor .margin {
+  background-color: #10141d !important;
+}
+
+.monaco-editor .monaco-scrollable-element .scrollbar .slider {
+  background: rgba(110, 118, 129, 0.35) !important;
+  border-radius: 4px;
 }
 
 .cm-panel-mount .CodeMirror {
