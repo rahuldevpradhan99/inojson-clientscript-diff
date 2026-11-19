@@ -185,6 +185,49 @@ assert(bundleReport.scriptErrors.length === 1, "Exactly 1 broken script identifi
 assert(bundleReport.scriptErrors[0].scriptKey === "postscript", "Correctly identified 'postscript' as containing the error");
 assert(bundleReport.scriptErrors[0].diagnostic.line === 2, "Pinpointed script error to line 2");
 
+// 7.11 Deep Line 100 JSON Error Localization (User Reported Regression)
+console.log("\n[7.11] Testing Deep Line 100 JSON Error Localization:");
+const linesJson = [];
+for (let i = 1; i <= 99; i++) {
+  linesJson.push(`  "key_${i}": ${i},`);
+}
+linesJson.push(`  "key_100": ,`); // syntax error on line 101 of document
+linesJson.push(`  "key_101": 101`);
+const deep100Json = "{\n" + linesJson.join("\n") + "\n}";
+
+const deepJsonReport = Validator.validateJson(deep100Json);
+assert(deepJsonReport.valid === false, "Detected JSON error in 100+ line document");
+assert(deepJsonReport.line === 101, `Pinpointed JSON error accurately at line 101 (got: ${deepJsonReport.line})`);
+assert(deepJsonReport.column > 1, `Pinpointed JSON error column accurately (got col: ${deepJsonReport.column})`);
+assert(deepJsonReport.snippet !== null, "Generated code snippet around line 101");
+assert(deepJsonReport.snippet.errorLine === 101, "Snippet points to line 101");
+
+// 7.12 Deep Line 100 JavaScript Error Localization (User Reported Regression)
+console.log("\n[7.12] Testing Deep Line 100 JavaScript Error Localization:");
+const linesJs = [];
+for (let i = 1; i <= 99; i++) {
+  linesJs.push(`const variable_${i} = ${i};`);
+}
+linesJs.push(`const badLine = ;`); // syntax error on line 100
+linesJs.push(`const variable_101 = 101;`);
+const deep100Js = linesJs.join("\n");
+
+const deepJsReport = Validator.validateJs(deep100Js);
+assert(deepJsReport.valid === false, "Detected JS syntax error in 100+ line script");
+assert(deepJsReport.line === 100, `Pinpointed JS syntax error accurately at line 100 (got: ${deepJsReport.line})`);
+assert(deepJsReport.column === 17, `Pinpointed JS syntax error column accurately at col 17 (got: ${deepJsReport.column})`);
+assert(deepJsReport.snippet !== null, "Generated code snippet around line 100");
+assert(deepJsReport.snippet.errorLine === 100, "Snippet points to line 100");
+
+// 7.13 Fallback JS Error Detection when Acorn is absent
+console.log("\n[7.13] Testing Fallback JS Error Detection (without Acorn):");
+const savedAcorn = globalThis.acorn;
+globalThis.acorn = null;
+const fallbackReport = Validator.validateJs(deep100Js);
+assert(fallbackReport.valid === false, "Fallback detected JS syntax error");
+assert(fallbackReport.line === 100, `Fallback accurately identified line 100 without Acorn (got: ${fallbackReport.line})`);
+globalThis.acorn = savedAcorn;
+
 console.log("\n====================================");
 console.log(`Results: ${passed} passed, ${failed} failed`);
 console.log("====================================");

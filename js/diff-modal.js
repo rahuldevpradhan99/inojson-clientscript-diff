@@ -1131,6 +1131,30 @@ export class DiffModal {
       this.activeCmErrorLine = null;
     }
 
+    // Synchronize VS Code Monaco error markers and minimap decorations
+    if (this.modalMonacoInstance && typeof monaco !== "undefined" && monaco.editor) {
+      const model = this.modalMonacoInstance.getModel();
+      if (model) {
+        if (diag.valid) {
+          monaco.editor.setModelMarkers(model, "syntax-validator", []);
+        } else {
+          const errLine = Math.max(1, diag.line || 1);
+          const errCol = Math.max(1, diag.column || 1);
+          const lineContent = model.getLineContent(errLine) || "";
+          monaco.editor.setModelMarkers(model, "syntax-validator", [
+            {
+              startLineNumber: errLine,
+              startColumn: errCol,
+              endLineNumber: errLine,
+              endColumn: Math.max(errCol + 1, lineContent.length + 1),
+              message: `${diag.errorTitle || "Syntax Error"}: ${diag.message}`,
+              severity: monaco.MarkerSeverity.Error
+            }
+          ]);
+        }
+      }
+    }
+
     if (!badge || !drawer) return;
 
     if (diag.valid) {

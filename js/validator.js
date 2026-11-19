@@ -74,30 +74,265 @@ export const Validator = {
   },
 
   /**
+   * Scans JSON token structure character by character to accurately locate
+   * syntax breakage points (missing commas, trailing commas, unquoted keys,
+   * single quotes, unclosed objects/arrays/strings, invalid tokens).
+   *
+   * @param {string} text - Raw JSON string
+   * @returns {Object|null} { line, col, pos, reason }
+   */
+  scanJsonStructure(text) {
+    if (!text) return null;
+    let line = 1, col = 0;
+    let i = 0;
+    const len = text.length;
+
+    const stack = []; // "OBJ", "ARR"
+    let expect = "VALUE"; // "VALUE", "KEY_OR_CLOSE", "KEY", "COLON", "COMMA_OR_CLOSE", "VALUE_OR_CLOSE"
+
+    while (i < len) {
+      const ch = text[i];
+      if (ch === " " || ch === "\t" || ch === "\r") {
+        i++; col++; continue;
+      }
+      if (ch === "\n") {
+        i++; line++; col = 0; continue;
+      }
+
+      const curLine = line;
+      const curCol = col + 1; // 1-based column
+      const curPos = i;
+
+      // Comment detection
+      if (ch === "/" && (text[i + 1] === "/" || text[i + 1] === "*")) {
+        return { line: curLine, col: curCol, pos: curPos, reason: "Comment in JSON" };
+      }
+
+      // String literal
+      if (ch === '"') {
+        i++; col++;
+        let closed = false;
+        while (i < len) {
+          const sc = text[i];
+          if (sc === "\n") {
+            return { line: curLine, col: curCol, pos: curPos, reason: "Unescaped newline in string literal" };
+          }
+          if (sc === "\\") {
+            i += 2; col += 2; continue;
+          }
+          if (sc === '"') {
+            i++; col++; closed = true; break;
+          }
+          i++; col++;
+        }
+        if (!closed) {
+          return { line: curLine, col: curCol, pos: curPos, reason: "Unclosed string literal" };
+        }
+
+        if (expect === "KEY" || expect === "KEY_OR_CLOSE") {
+          expect = "COLON";
+        } else if (expect === "VALUE" || expect === "VALUE_OR_CLOSE") {
+          expect = "COMMA_OR_CLOSE";
+        } else {
+          return { line: curLine, col: curCol, pos: curPos, reason: "Unexpected string literal" };
+        }
+        continue;
+      }
+
+      // Single quotes error
+      if (ch === "'") {
+        return { line: curLine, col: curCol, pos: curPos, reason: "Single quotes used instead of double quotes" };
+      }
+
+      // Object start '{'
+      if (ch === "{") {
+        i++; col++;
+        if (expect !== "VALUE" && expect !== "VALUE_OR_CLOSE") {
+          return { line: curLine, col: curCol, pos: curPos, reason: "Unexpected '{'" };
+        }
+        stack.push("OBJ");
+        expect = "KEY_OR_CLOSE";
+        continue;
+      }
+
+      // Object end '}'
+      if (ch === "}") {
+        i++; col++;
+        const top = stack.pop();
+        if (top !== "OBJ") {
+          return { line: curLine, col: curCol, pos: curPos, reason: "Unexpected '}'" };
+        }
+        if (expect === "COLON" || expect === "KEY") {
+          return { line: curLine, col: curCol, pos: curPos, reason: "Trailing comma before '}' or missing property" };
+        }
+        expect = "COMMA_OR_CLOSE";
+        continue;
+      }
+
+      // Array start '['
+      if (ch === "[") {
+        i++; col++;
+        if (expect !== "VALUE" && expect !== "VALUE_OR_CLOSE") {
+          return { line: curLine, col: curCol, pos: curPos, reason: "Unexpected '['" };
+        }
+        stack.push("ARR");
+        expect = "VALUE_OR_CLOSE";
+        continue;
+      }
+
+      // Array end ']'
+      if (ch === "]") {
+        i++; col++;
+        const top = stack.pop();
+        if (top !== "ARR") {
+          return { line: curLine, col: curCol, pos: curPos, reason: "Unexpected ']'" };
+        }
+        if (expect === "VALUE") {
+          return { line: curLine, col: curCol, pos: curPos, reason: "Trailing comma before ']'" };
+        }
+        expect = "COMMA_OR_CLOSE";
+        continue;
+      }
+
+      // Colon ':'
+      if (ch === ":") {
+        i++; col++;
+        if (expect !== "COLON") {
+          return { line: curLine, col: curCol, pos: curPos, reason: "Unexpected ':'" };
+        }
+        expect = "VALUE";
+        continue;
+      }
+
+      // Comma ','
+      if (ch === ",") {
+        i++; col++;
+        if (expect !== "COMMA_OR_CLOSE") {
+          return { line: curLine, col: curCol, pos: curPos, reason: "Unexpected ',' (missing value or illegal comma)" };
+        }
+        const top = stack[stack.length - 1];
+        if (top === "OBJ") {
+          expect = "KEY";
+        } else if (top === "ARR") {
+          expect = "VALUE";
+        } else {
+          return { line: curLine, col: curCol, pos: curPos, reason: "Unexpected comma outside container" };
+        }
+        continue;
+      }
+
+      // Numbers, booleans, null, or unquoted identifiers
+      if (/^[0-9\-a-zA-Z_$]/.test(ch)) {
+        const startI = i;
+        while (i < len && /[0-9a-zA-Z_$.+\-]/.test(text[i])) {
+          i++; col++;
+        }
+        const word = text.slice(startI, i);
+        const isValidJsonLiteral =
+          word === "true" ||
+          word === "false" ||
+          word === "null" ||
+          /^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$/.test(word);
+
+        if (isValidJsonLiteral) {
+          if (expect === "KEY" || expect === "KEY_OR_CLOSE") {
+            return { line: curLine, col: curCol, pos: curPos, reason: `Unquoted key '${word}'` };
+          }
+          if (expect !== "VALUE" && expect !== "VALUE_OR_CLOSE") {
+            return { line: curLine, col: curCol, pos: curPos, reason: `Unexpected token '${word}'` };
+          }
+          expect = "COMMA_OR_CLOSE";
+        } else {
+          if (expect === "KEY" || expect === "KEY_OR_CLOSE") {
+            return { line: curLine, col: curCol, pos: curPos, reason: `Unquoted key '${word}'` };
+          }
+          return { line: curLine, col: curCol, pos: curPos, reason: `Invalid token '${word}'` };
+        }
+        continue;
+      }
+
+      // Any other unexpected character
+      return { line: curLine, col: curCol, pos: curPos, reason: `Unexpected character '${ch}'` };
+    }
+
+    if (stack.length > 0) {
+      const needed = stack[stack.length - 1] === "OBJ" ? "}" : "]";
+      return { line, col: Math.max(1, col), pos: len, reason: `Unclosed container (missing '${needed}')` };
+    }
+
+    return null;
+  },
+
+  /**
    * Deeply diagnose a JSON parse error by inspecting the text around the failure position.
    */
   diagnoseJsonError(text, rawMessage) {
     const lines = text.split(/\r?\n/);
     let pos = -1;
-    let line = 1;
-    let column = 1;
+    let line = null;
+    let column = null;
 
-    // 1. Try to extract position from V8 / SpiderMonkey error messages
-    const posMatch = rawMessage.match(/position\s+(\d+)/i);
-    const lineColMatch = rawMessage.match(/line\s+(\d+)\s+column\s+(\d+)/i);
+    // 1. Check explicit "(line X column Y)" or "line X column Y"
+    const lineColMatch =
+      rawMessage.match(/\(line\s+(\d+)\s+column\s+(\d+)\)/i) ||
+      rawMessage.match(/line\s+(\d+)\s+column\s+(\d+)/i);
 
     if (lineColMatch) {
       line = parseInt(lineColMatch[1], 10);
       column = parseInt(lineColMatch[2], 10);
-      // Compute pos
       let offset = 0;
       for (let i = 0; i < line - 1 && i < lines.length; i++) {
-        offset += lines[i].length + 1; // approximation
+        offset += lines[i].length + 1;
       }
       pos = offset + (column - 1);
-    } else if (posMatch) {
+    }
+
+    // 2. Check "position <digits>"
+    const posMatch = rawMessage.match(/position\s+(\d+)/i);
+    if (posMatch) {
       pos = parseInt(posMatch[1], 10);
-      // Map character offset to line & column
+    }
+
+    // 3. Modern Chrome/V8 excerpt pattern:
+    // e.g. Unexpected token ',', ..."key_100": ,\n  "key_1"... is not valid JSON
+    // or ..."": [1, 2, , 4]}" is not valid JSON
+    if (pos === -1 && !line) {
+      const excerptMatch = rawMessage.match(/\.\.\.([\s\S]+?)(?:\.\.\.|\"\s+is not valid JSON|\s+is not valid JSON|$)/);
+      if (excerptMatch) {
+        let excerpt = excerptMatch[1];
+        if (excerpt.startsWith('"')) excerpt = excerpt.slice(1);
+        if (excerpt.endsWith('"')) excerpt = excerpt.slice(0, -1);
+
+        let found = text.indexOf(excerpt);
+        if (found === -1 && excerpt.length > 10) {
+          found = text.indexOf(excerpt.slice(0, 15));
+        }
+        if (found !== -1) {
+          const tokMatch = rawMessage.match(/Unexpected token\s*(?:'([^']+)'|(\S+))/);
+          const token = tokMatch ? (tokMatch[1] || tokMatch[2]) : null;
+          let offsetInExcerpt = 0;
+          if (token) {
+            const tokIdx = excerpt.indexOf(token);
+            if (tokIdx !== -1) offsetInExcerpt = tokIdx;
+          }
+          pos = found + offsetInExcerpt;
+        }
+      }
+    }
+
+    // 4. Fallback Token/Syntax Scanner
+    // If line is not found yet, or pos is <= 0 while text has multiple lines:
+    if (!line && (pos === -1 || (pos === 0 && lines.length > 1))) {
+      const scanResult = this.scanJsonStructure(text);
+      if (scanResult) {
+        line = scanResult.line;
+        column = scanResult.col;
+        pos = scanResult.pos;
+      }
+    }
+
+    // Map character offset to line & column if line wasn't set yet
+    if (!line && pos >= 0) {
       let counted = 0;
       for (let i = 0; i < lines.length; i++) {
         const lineLen = lines[i].length + 1; // including newline
@@ -108,15 +343,18 @@ export const Validator = {
         }
         counted += lineLen;
       }
-      if (line > lines.length) {
-        line = lines.length;
-        column = (lines[lines.length - 1] || "").length + 1;
+    }
+
+    // Absolute boundary fallbacks
+    if (!line || line < 1) line = 1;
+    if (line > lines.length) line = lines.length;
+    if (!column || column < 1) column = 1;
+    if (pos < 0) {
+      let offset = 0;
+      for (let i = 0; i < line - 1 && i < lines.length; i++) {
+        offset += lines[i].length + 1;
       }
-    } else {
-      // Fallback
-      line = 1;
-      column = 1;
-      pos = 0;
+      pos = offset + (column - 1);
     }
 
     const currentLineText = lines[line - 1] || "";
@@ -127,23 +365,22 @@ export const Validator = {
     let errorTitle = "JSON Syntax Error";
     let message = rawMessage;
     let explanation = "The JSON parser encountered unexpected characters or malformed structure.";
-    let fixSuggestion = "Check the syntax at the highlighted line and ensure proper quotes and commas.";
+    let fixSuggestion = `Check the syntax at line ${line} and ensure proper quotes and commas.`;
 
     // Pattern A: Trailing comma before } or ]
-    // Check if right before pos or current token is a comma followed by closing brace/bracket
     const beforePos = text.slice(Math.max(0, pos - 20), pos).trim();
     const atPos = text.slice(pos, pos + 20).trim();
     const lineBeforeCol = currentLineText.slice(0, column - 1).trim();
 
     if (
-      (atPos.startsWith("}") || atPos.startsWith("]")) &&
-      (beforePos.endsWith(",") || lineBeforeCol.endsWith(",") || /,\s*$/.test(prevLineText))
+      (atPos.startsWith("}") || atPos.startsWith("]") || currentLineText.trim().startsWith("}") || currentLineText.trim().startsWith("]")) &&
+      (beforePos.endsWith(",") || lineBeforeCol.endsWith(",") || /,\s*$/.test(prevLineText) || currentLineText.includes(","))
     ) {
-      const bracket = atPos[0];
+      const bracket = atPos.startsWith("]") || currentLineText.trim().startsWith("]") ? "]" : "}";
       errorTitle = `Trailing Comma before '${bracket}'`;
       message = `Illegal trailing comma found before closing '${bracket}'`;
       explanation = `The JSON standard (RFC 8259) strictly forbids trailing commas after the last property in an object or element in an array.`;
-      fixSuggestion = `Delete the trailing comma ',' on line ${lineBeforeCol.endsWith(",") ? line : line - 1}, or click '⚡ Auto-Fix JSON'.`;
+      fixSuggestion = `Delete the trailing comma ',' on line ${lineBeforeCol.endsWith(",") ? line : line > 1 && /,\s*$/.test(prevLineText) ? line - 1 : line}, or click '⚡ Auto-Fix JSON'.`;
     }
     // Pattern B: Comments in JSON (// or /*)
     else if (
@@ -168,7 +405,18 @@ export const Validator = {
       explanation = `JSON requires all strings and property names to be enclosed in standard double quotes ("). Single quotes are valid in JS, but invalid in JSON.`;
       fixSuggestion = `Replace single quotes (') with double quotes ("), e.g. "key": "value", or click '⚡ Auto-Fix JSON'.`;
     }
-    // Pattern D: Unquoted property key
+    // Pattern D: Missing value (e.g. "key": ,)
+    else if (
+      /:\s*,/.test(currentLineText) ||
+      (currentLineText.trim().endsWith(":") && atPos.startsWith(",")) ||
+      rawMessage.toLowerCase().includes("unexpected token ','")
+    ) {
+      errorTitle = "Missing Property Value";
+      message = `Found a colon ':' followed immediately by a comma ',' without a value`;
+      explanation = `A property key was followed by a colon ':', but the value was left empty before the comma. In JSON, every property must have a valid value.`;
+      fixSuggestion = `Provide a valid value for the property on line ${line} (e.g. "value", 0, null, false, or {}), or remove the key.`;
+    }
+    // Pattern E: Unquoted property key
     else if (
       /([{,]\s*)([a-zA-Z_$][a-zA-Z0-9_$]*)\s*:/.test(currentLineText) ||
       rawMessage.toLowerCase().includes("expected property name") ||
@@ -181,7 +429,7 @@ export const Validator = {
       explanation = `In JSON, all object property keys must be surrounded by double quotes, e.g. "${keyName}": value. Unquoted keys are allowed in JavaScript object literals, but strictly invalid in JSON.`;
       fixSuggestion = `Wrap the key '${keyName}' in double quotes: "${keyName}": ..., or click '⚡ Auto-Fix JSON'.`;
     }
-    // Pattern E: Missing comma between properties
+    // Pattern F: Missing comma between properties
     else if (
       rawMessage.toLowerCase().includes("expected ','") ||
       (prevLineText.trim().length > 0 &&
@@ -195,14 +443,14 @@ export const Validator = {
       explanation = `Expected a comma ',' separating properties or array elements. In JSON, every entry (except the last one in a block) must end with a comma.`;
       fixSuggestion = `Add a comma ',' at the end of line ${line > 1 ? line - 1 : line}.`;
     }
-    // Pattern F: Unescaped raw newline in string literal
+    // Pattern G: Unescaped raw newline in string literal
     else if (rawMessage.toLowerCase().includes("bad control character") || rawMessage.toLowerCase().includes("unterminated string")) {
       errorTitle = "Unescaped Newline in String Literal";
       message = "String literal contains raw unescaped line breaks";
       explanation = `JSON strings cannot contain unescaped line breaks. Multiline scripts or strings must escape newlines as '\\r\\n' or '\\n'.`;
       fixSuggestion = `Escape the line breaks using '\\r\\n' (for clientscripts) or '\\n', or use the Quick Snippet Converter.`;
     }
-    // Pattern G: Unbalanced braces/brackets
+    // Pattern H: Unbalanced braces/brackets
     else {
       const openBraces = (text.match(/\{/g) || []).length;
       const closeBraces = (text.match(/\}/g) || []).length;
@@ -447,11 +695,24 @@ export const Validator = {
    * Resolve Acorn parser instance from globalThis or window
    */
   getAcornInstance() {
-    if (typeof globalThis !== "undefined" && globalThis.acorn) {
+    if (typeof globalThis !== "undefined" && globalThis.acorn && typeof globalThis.acorn.parse === "function") {
       return globalThis.acorn;
     }
-    if (typeof window !== "undefined" && window.acorn) {
+    if (typeof window !== "undefined" && window.acorn && typeof window.acorn.parse === "function") {
       return window.acorn;
+    }
+    // If Acorn was loaded via AMD into Monaco / RequireJS loader
+    if (typeof window !== "undefined" && typeof window.require === "function") {
+      try {
+        let instance = null;
+        window.require(["acorn"], mod => {
+          if (mod) {
+            instance = mod;
+            window.acorn = mod;
+          }
+        });
+        if (instance && typeof instance.parse === "function") return instance;
+      } catch (e) {}
     }
     return null;
   },
@@ -672,7 +933,9 @@ export const Validator = {
   },
 
   /**
-   * Fallback diagnosis when Acorn is absent
+   * Fallback diagnosis when Acorn is absent.
+   * Employs safe statement analysis to locate the exact offending line
+   * instead of falling back to Line 1.
    */
   diagnoseJsFallbackError(code, rawMsg, bracketCheck) {
     const lines = code.split(/\r?\n/);
@@ -691,16 +954,30 @@ export const Validator = {
       };
     }
 
+    // Incremental search for offending statement to avoid defaulting to line 1
+    let detectedLine = 1;
+    let detectedCol = 1;
+    for (let i = 0; i < lines.length; i++) {
+      const lineText = lines[i].trim();
+      if (!lineText || lineText.startsWith("//") || lineText.startsWith("/*") || lineText.startsWith("*")) continue;
+      try {
+        new Function(`function _test() { switch(0) { case 0: default: ; } ${lineText} \n}`);
+      } catch (e2) {
+        detectedLine = i + 1;
+        break;
+      }
+    }
+
     return {
       valid: false,
       isEmpty: false,
       errorTitle: "JavaScript Syntax Error",
       message: rawMsg,
       explanation: "JavaScript syntax evaluation failed.",
-      fixSuggestion: "Review the script for unmatched brackets, missing quotes, or typos.",
-      line: 1,
-      column: 1,
-      snippet: this.buildCodeSnippet(lines, 1, 1),
+      fixSuggestion: `Review line ${detectedLine} for misplaced tokens, unclosed expressions, or syntax errors.`,
+      line: detectedLine,
+      column: detectedCol,
+      snippet: this.buildCodeSnippet(lines, detectedLine, detectedCol),
       canAutoFix: false
     };
   },

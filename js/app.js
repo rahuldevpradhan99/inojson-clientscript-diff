@@ -382,6 +382,32 @@ class InoJsonApp {
     const container = side === "left" ? this.leftValidationPanel : this.rightValidationPanel;
     if (!container) return;
 
+    // Synchronize VS Code Monaco error markers on main bundle editor
+    const monacoInstance = side === "left" ? this.monacoLeft : this.monacoRight;
+    if (monacoInstance && typeof monaco !== "undefined" && monaco.editor) {
+      const model = monacoInstance.getModel();
+      if (model) {
+        if (report.jsonValid) {
+          monaco.editor.setModelMarkers(model, "json-validator", []);
+        } else {
+          const diag = report.jsonDiag;
+          const errLine = Math.max(1, diag.line || 1);
+          const errCol = Math.max(1, diag.column || 1);
+          const lineContent = model.getLineContent(errLine) || "";
+          monaco.editor.setModelMarkers(model, "json-validator", [
+            {
+              startLineNumber: errLine,
+              startColumn: errCol,
+              endLineNumber: errLine,
+              endColumn: Math.max(errCol + 1, lineContent.length + 1),
+              message: `${diag.errorTitle || "JSON Error"}: ${diag.message}`,
+              severity: monaco.MarkerSeverity.Error
+            }
+          ]);
+        }
+      }
+    }
+
     // Case 1: Empty input
     if (report.jsonDiag.isEmpty) {
       container.innerHTML = `
