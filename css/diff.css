@@ -843,3 +843,25 @@
 .tok-comment { color: #8b949e; font-style: italic; }
 .tok-operator { color: #79c0ff; }
 .tok-punct { color: #c9d1d9; }
+
+/* Validation Status Pills in Diff Panes */
+.val-pill {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  padding: 2px 7px;
+  border-radius: 10px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.val-pill.pill-valid {
+  background-color: rgba(63, 185, 80, 0.15);
+  color: #56d364;
+  border: 1px solid rgba(63, 185, 80, 0.3);
+}
+
+.val-pill.pill-error {
+  background-color: rgba(248, 81, 73, 0.2);
+  color: #ff7b72;
+  border: 1px solid rgba(248, 81, 73, 0.4);
+}

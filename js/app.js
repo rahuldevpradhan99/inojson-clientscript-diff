@@ -1,11 +1,13 @@
 /**
  * Main Application Orchestrator for InoJson Script Compare & Diff
- * Features CodeMirror JSON editing on both panels and integration with DiffModal.
+ * Features CodeMirror JSON editing on both panels, deep JSON & JavaScript validation,
+ * actionable error diagnostics, intelligent auto-fix, and integration with DiffModal.
  */
 
 import { JsonEngine } from "./json-engine.js";
 import { SAMPLE_BASE_JSON, SAMPLE_TARGET_JSON } from "./sample-data.js";
 import { DiffModal } from "./diff-modal.js";
+import { Validator } from "./validator.js";
 
 class InoJsonApp {
   constructor() {
@@ -17,6 +19,8 @@ class InoJsonApp {
     this.rightStatusEl = document.getElementById("rightStatus");
     this.leftScriptsListEl = document.getElementById("leftScriptsList");
     this.rightScriptsListEl = document.getElementById("rightScriptsList");
+    this.leftValidationPanel = document.getElementById("leftValidationPanel");
+    this.rightValidationPanel = document.getElementById("rightValidationPanel");
     this.compareSummaryEl = document.getElementById("compareSummary");
     this.btnOpenDiffModal = document.getElementById("btnOpenDiffModal");
 
@@ -24,6 +28,8 @@ class InoJsonApp {
     this.cmRight = null;
     this.leftParsed = null;
     this.rightParsed = null;
+    this.leftReport = null;
+    this.rightReport = null;
     this.lineEndingPreference = "crlf";
 
     // Initialize Diff Modal with two-way merge support and full code editor
@@ -49,6 +55,7 @@ class InoJsonApp {
     this.initCodeMirrorPanels();
     this.bindEvents();
     this.bindFileUploads();
+    this.bindValidationActions();
     this.bindQuickConverter();
 
     // Load initial realistic sample data
@@ -280,17 +287,22 @@ class InoJsonApp {
     const leftText = this.getLeftText().trim();
     const rightText = this.getRightText().trim();
 
-    // Parse Left
-    const leftRes = JsonEngine.parse(leftText);
-    this.updateStatusBadge(this.leftStatusEl, leftRes, "Original");
-    this.leftParsed = leftRes.ok ? leftRes.data : null;
+    // 1. Run deep bundle validation (JSON structure + embedded client scripts)
+    this.leftReport = Validator.validateBundle(leftText, JsonEngine);
+    this.rightReport = Validator.validateBundle(rightText, JsonEngine);
 
-    // Parse Right
-    const rightRes = JsonEngine.parse(rightText);
-    this.updateStatusBadge(this.rightStatusEl, rightRes, "Modified");
-    this.rightParsed = rightRes.ok ? rightRes.data : null;
+    // 2. Render dedicated Validation Diagnostics Panels
+    this.renderValidationPanel("left", this.leftReport, leftText);
+    this.renderValidationPanel("right", this.rightReport, rightText);
 
-    // Detect client scripts
+    // 3. Update top status tags
+    this.updateStatusBadge(this.leftStatusEl, this.leftReport, leftText);
+    this.updateStatusBadge(this.rightStatusEl, this.rightReport, rightText);
+
+    this.leftParsed = this.leftReport.jsonValid ? this.leftReport.jsonDiag.data : null;
+    this.rightParsed = this.rightReport.jsonValid ? this.rightReport.jsonDiag.data : null;
+
+    // 4. Detect and render client scripts chips
     let leftBlocks = [];
     let rightBlocks = [];
 
@@ -311,18 +323,231 @@ class InoJsonApp {
     this.updateComparisonSummary(leftBlocks, rightBlocks);
   }
 
-  updateStatusBadge(el, parseRes, label) {
+  renderValidationPanel(side, report, rawText) {
+    const container = side === "left" ? this.leftValidationPanel : this.rightValidationPanel;
+    if (!container) return;
+
+    // Case 1: Empty input
+    if (report.jsonDiag.isEmpty) {
+      container.innerHTML = `
+        <div class="val-bar-empty">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+          <span>Paste or upload a JSON bundle above to begin syntax validation</span>
+        </div>
+      `;
+      return;
+    }
+
+    // Case 2: JSON Syntax Error
+    if (!report.jsonValid) {
+      const diag = report.jsonDiag;
+      const snippetHtml = diag.snippet
+        ? `
+          <div class="val-snippet-box">
+            ${diag.snippet.lines
+              .map(
+                l => `
+              <div class="val-snippet-line ${l.isError ? "val-error-line" : ""}">
+                <span class="val-line-no">${l.lineNum}</span>
+                <span class="val-line-code">${this.escapeHtml(l.text)}</span>
+              </div>
+            `
+              )
+              .join("")}
+            <div class="val-pointer-line">
+              <span class="val-line-no"></span>
+              <span class="val-pointer">${this.escapeHtml(diag.snippet.pointer)}--- Error detected here</span>
+            </div>
+          </div>
+        `
+        : "";
+
+      container.innerHTML = `
+        <div class="val-card-error">
+          <div class="val-card-header">
+            <div class="val-header-left">
+              <svg class="val-icon-error" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+              <span class="val-title">${this.escapeHtml(diag.errorTitle || "JSON Syntax Error")}</span>
+              <span class="val-loc-pill">Line ${diag.line || 1}, Col ${diag.column || 1}</span>
+            </div>
+            <div class="val-header-actions">
+              ${
+                diag.canAutoFix
+                  ? `<button class="btn-val-autofix" data-side="${side}" title="Automatically fix trailing commas, unquoted keys, single quotes, or comments">
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                      ⚡ Auto-Fix JSON
+                    </button>`
+                  : ""
+              }
+              <button class="btn-val-jump" data-side="${side}" data-line="${diag.line || 1}" data-col="${diag.column || 1}" title="Focus and scroll to error line in editor">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+                Jump to Line
+              </button>
+            </div>
+          </div>
+
+          ${snippetHtml}
+
+          <div class="val-details">
+            <div class="val-reason">
+              <span class="val-label">Problem:</span>
+              <span class="val-text">${this.escapeHtml(diag.explanation)}</span>
+            </div>
+            <div class="val-fix">
+              <span class="val-label">How to fix:</span>
+              <span class="val-text">${this.escapeHtml(diag.fixSuggestion)}</span>
+            </div>
+          </div>
+        </div>
+      `;
+      return;
+    }
+
+    // Case 3: JSON is valid, BUT embedded JavaScript has a syntax error!
+    if (report.hasScriptErrors && report.scriptErrors.length > 0) {
+      const firstErr = report.scriptErrors[0];
+      const jsDiag = firstErr.diagnostic;
+      const snippetHtml = jsDiag.snippet
+        ? `
+          <div class="val-snippet-box">
+            ${jsDiag.snippet.lines
+              .map(
+                l => `
+              <div class="val-snippet-line ${l.isError ? "val-error-line" : ""}">
+                <span class="val-line-no">${l.lineNum}</span>
+                <span class="val-line-code">${this.escapeHtml(l.text)}</span>
+              </div>
+            `
+              )
+              .join("")}
+            <div class="val-pointer-line">
+              <span class="val-line-no"></span>
+              <span class="val-pointer">${this.escapeHtml(jsDiag.snippet.pointer)}--- JS syntax error</span>
+            </div>
+          </div>
+        `
+        : "";
+
+      container.innerHTML = `
+        <div class="val-card-warn">
+          <div class="val-card-header">
+            <div class="val-header-left">
+              <svg class="val-icon-warn" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+              <span class="val-title">JavaScript Error in ${this.escapeHtml(firstErr.scriptKey)}</span>
+              <span class="val-loc-pill">Line ${jsDiag.line || 1}, Col ${jsDiag.column || 1}</span>
+            </div>
+            <div class="val-header-actions">
+              <button class="btn-val-fix-diff" data-script="${this.escapeHtml(firstErr.scriptKey)}" title="Launch Diff & Edit Studio directly to this script">
+                🛠️ Fix in Diff Studio
+              </button>
+            </div>
+          </div>
+
+          ${snippetHtml}
+
+          <div class="val-details">
+            <div class="val-reason">
+              <span class="val-label">Problem:</span>
+              <span class="val-text">${this.escapeHtml(jsDiag.explanation || jsDiag.message)}</span>
+            </div>
+            <div class="val-fix">
+              <span class="val-label">How to fix:</span>
+              <span class="val-text">${this.escapeHtml(jsDiag.fixSuggestion)}</span>
+            </div>
+          </div>
+        </div>
+      `;
+      return;
+    }
+
+    // Case 4: Everything is valid!
+    const lineCount = rawText ? rawText.split(/\r?\n/).length : 0;
+    container.innerHTML = `
+      <div class="val-bar-valid">
+        <div class="val-bar-left">
+          <svg class="val-icon-success" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+          <span class="val-status-text">Valid JSON Structure (${lineCount} lines)</span>
+          <span class="val-badge-clean">0 syntax errors</span>
+        </div>
+        <div class="val-bar-right">
+          <span class="val-script-status">✓ ${report.scriptsChecked} embedded script(s) valid JS</span>
+        </div>
+      </div>
+    `;
+  }
+
+  bindValidationActions() {
+    const handlePanelClick = (e, side) => {
+      // 1. Auto-Fix JSON button
+      const btnAutoFix = e.target.closest(".btn-val-autofix");
+      if (btnAutoFix) {
+        const rawText = side === "left" ? this.getLeftText() : this.getRightText();
+        const fixResult = Validator.autoFixJson(rawText);
+        if (fixResult.ok) {
+          if (side === "left") {
+            this.setLeftJson(fixResult.fixedText);
+          } else {
+            this.setRightJson(fixResult.fixedText);
+          }
+          this.analyzeInputs();
+          const fixList = fixResult.appliedFixes.length ? fixResult.appliedFixes.join(", ") : "Formatted JSON";
+          this.showToast(`⚡ Auto-fixed JSON: ${fixList}!`);
+        } else {
+          this.showToast("Could not auto-fix all syntax errors. Please inspect the highlighted line.");
+        }
+        return;
+      }
+
+      // 2. Jump to line button
+      const btnJump = e.target.closest(".btn-val-jump");
+      if (btnJump) {
+        const line = parseInt(btnJump.dataset.line, 10);
+        const col = parseInt(btnJump.dataset.col, 10) || 1;
+        const cm = side === "left" ? this.cmLeft : this.cmRight;
+        if (cm && !isNaN(line)) {
+          cm.setCursor({ line: Math.max(0, line - 1), ch: Math.max(0, col - 1) });
+          cm.scrollIntoView({ line: Math.max(0, line - 1), ch: Math.max(0, col - 1) }, 100);
+          cm.focus();
+
+          // Visual flash
+          cm.addLineClass(line - 1, "background", "cm-val-flash");
+          setTimeout(() => cm.removeLineClass(line - 1, "background", "cm-val-flash"), 1500);
+        }
+        return;
+      }
+
+      // 3. Fix script in Diff Studio button
+      const btnFixDiff = e.target.closest(".btn-val-fix-diff");
+      if (btnFixDiff) {
+        const scriptKey = btnFixDiff.dataset.script || "prescript";
+        this.openDiffDialog(scriptKey);
+        return;
+      }
+    };
+
+    this.leftValidationPanel?.addEventListener("click", e => handlePanelClick(e, "left"));
+    this.rightValidationPanel?.addEventListener("click", e => handlePanelClick(e, "right"));
+  }
+
+  updateStatusBadge(el, report, rawText) {
     if (!el) return;
-    if (!parseRes.ok && parseRes.error === "Input is empty") {
+    if (report.jsonDiag.isEmpty) {
       el.className = "status-tag tag-empty";
       el.textContent = "Empty";
-    } else if (parseRes.ok) {
-      el.className = "status-tag tag-valid";
-      el.textContent = `Valid JSON • ${parseRes.lineEnding === "\r\n" ? "CRLF (\\r\\n)" : "LF (\\n)"}`;
-    } else {
+      el.title = "No content provided";
+    } else if (!report.jsonValid) {
       el.className = "status-tag tag-error";
-      el.textContent = "Invalid JSON Syntax";
-      el.title = parseRes.error;
+      el.textContent = `✖ ${report.jsonDiag.errorTitle || "JSON Error"}`;
+      el.title = report.jsonDiag.message;
+    } else if (report.hasScriptErrors) {
+      el.className = "status-tag tag-warn";
+      el.textContent = "⚠ Valid JSON (JS Script Error)";
+      el.title = "JSON syntax is valid, but one or more embedded scripts in clientscripts contain JavaScript syntax errors";
+    } else {
+      const hasCrLf = rawText.includes("\r\n");
+      el.className = "status-tag tag-valid";
+      el.textContent = `✓ Valid JSON • ${hasCrLf ? "CRLF (\\r\\n)" : "LF (\\n)"}`;
+      el.title = "JSON bundle and all embedded scripts are 100% syntactically valid";
     }
   }
 
@@ -452,6 +677,8 @@ class InoJsonApp {
   bindQuickConverter() {
     const rawInput = document.getElementById("converterRawInput");
     const cleanInput = document.getElementById("converterCleanInput");
+    const convRawVal = document.getElementById("convRawVal");
+    const convCleanVal = document.getElementById("convCleanVal");
     const btnToReadable = document.getElementById("btnConvToReadable");
     const btnToEscaped = document.getElementById("btnConvToEscaped");
     const btnCopyRaw = document.getElementById("btnCopyConvRaw");
@@ -459,10 +686,32 @@ class InoJsonApp {
 
     if (!rawInput || !cleanInput) return;
 
+    // Real-time clean JS validation
+    const validateCleanInput = () => {
+      const code = cleanInput.value;
+      if (!convCleanVal) return;
+      if (!code.trim()) {
+        convCleanVal.textContent = "";
+        convCleanVal.className = "conv-val-indicator";
+        return;
+      }
+      const res = Validator.validateJs(code);
+      if (res.valid) {
+        convCleanVal.className = "conv-val-indicator valid";
+        convCleanVal.textContent = "✓ Valid JavaScript syntax (0 errors)";
+      } else {
+        convCleanVal.className = "conv-val-indicator error";
+        convCleanVal.textContent = `✖ Line ${res.line}, Col ${res.column}: ${res.errorTitle} — ${res.fixSuggestion}`;
+      }
+    };
+
+    cleanInput.addEventListener("input", validateCleanInput);
+
     btnToReadable?.addEventListener("click", () => {
       const raw = rawInput.value;
       const clean = JsonEngine.toReadableJs(raw);
       cleanInput.value = clean;
+      validateCleanInput();
       this.showToast("Converted to readable JavaScript!");
     });
 
@@ -470,6 +719,10 @@ class InoJsonApp {
       const clean = cleanInput.value;
       const escaped = JsonEngine.toRawEscapedString(clean, true);
       rawInput.value = escaped;
+      if (convRawVal) {
+        convRawVal.className = "conv-val-indicator valid";
+        convRawVal.textContent = "✓ Valid escaped JSON string (CRLF \\r\\n)";
+      }
       this.showToast("Converted to escaped JSON string format (\\r\\n)!");
     });
 
@@ -484,6 +737,16 @@ class InoJsonApp {
         this.showToast("Copied clean JS!");
       });
     });
+  }
+
+  escapeHtml(str) {
+    if (typeof str !== "string") return "";
+    return str
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
   }
 
   showToast(message) {

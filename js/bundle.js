@@ -258,6 +258,803 @@ const JsBeautifier = {
 };
 
 
+/* --- js/validator.js --- */
+/**
+ * Validator and Diagnostics Engine for InoJson Script Compare & Diff Studio
+ * Provides comprehensive JSON and JavaScript syntax validation, pinpoint error
+ * localization (line, column, code snippet with pointer), actionable fix suggestions,
+ * and intelligent auto-fix capabilities.
+ */
+
+const Validator = {
+  /**
+   * Validate JSON string with deep diagnostics, line/col pinpointing,
+   * error explanation, fix recommendations, and auto-fix preview.
+   *
+   * @param {string} jsonStr - Raw JSON text to validate
+   * @returns {Object} Diagnostic report
+   */
+  validateJson(jsonStr) {
+    if (!jsonStr || !jsonStr.trim()) {
+      return {
+        valid: false,
+        isEmpty: true,
+        errorTitle: "Empty JSON Document",
+        message: "No content provided",
+        explanation: "The JSON input is completely empty. Paste or upload a JSON bundle to proceed.",
+        fixSuggestion: "Paste a valid JSON bundle or click 'Load Sample' to populate standard low-code data.",
+        line: 1,
+        column: 1,
+        position: 0,
+        snippet: null,
+        canAutoFix: false,
+        autoFixedText: null,
+        appliedFixes: []
+      };
+    }
+
+    try {
+      const parsed = JSON.parse(jsonStr);
+      return {
+        valid: true,
+        isEmpty: false,
+        errorTitle: null,
+        message: null,
+        explanation: null,
+        fixSuggestion: null,
+        line: null,
+        column: null,
+        position: null,
+        snippet: null,
+        canAutoFix: false,
+        autoFixedText: null,
+        appliedFixes: [],
+        data: parsed
+      };
+    } catch (parseErr) {
+      const diagnosis = this.diagnoseJsonError(jsonStr, parseErr.message);
+      const autoFixResult = this.autoFixJson(jsonStr);
+
+      return {
+        valid: false,
+        isEmpty: false,
+        rawMessage: parseErr.message,
+        errorTitle: diagnosis.errorTitle,
+        message: diagnosis.message,
+        explanation: diagnosis.explanation,
+        fixSuggestion: diagnosis.fixSuggestion,
+        line: diagnosis.line,
+        column: diagnosis.column,
+        position: diagnosis.position,
+        snippet: diagnosis.snippet,
+        canAutoFix: autoFixResult.ok,
+        autoFixedText: autoFixResult.ok ? autoFixResult.fixedText : null,
+        appliedFixes: autoFixResult.appliedFixes || []
+      };
+    }
+  },
+
+  /**
+   * Deeply diagnose a JSON parse error by inspecting the text around the failure position.
+   */
+  diagnoseJsonError(text, rawMessage) {
+    const lines = text.split(/\r?\n/);
+    let pos = -1;
+    let line = 1;
+    let column = 1;
+
+    // 1. Try to extract position from V8 / SpiderMonkey error messages
+    const posMatch = rawMessage.match(/position\s+(\d+)/i);
+    const lineColMatch = rawMessage.match(/line\s+(\d+)\s+column\s+(\d+)/i);
+
+    if (lineColMatch) {
+      line = parseInt(lineColMatch[1], 10);
+      column = parseInt(lineColMatch[2], 10);
+      // Compute pos
+      let offset = 0;
+      for (let i = 0; i < line - 1 && i < lines.length; i++) {
+        offset += lines[i].length + 1; // approximation
+      }
+      pos = offset + (column - 1);
+    } else if (posMatch) {
+      pos = parseInt(posMatch[1], 10);
+      // Map character offset to line & column
+      let counted = 0;
+      for (let i = 0; i < lines.length; i++) {
+        const lineLen = lines[i].length + 1; // including newline
+        if (counted + lineLen > pos) {
+          line = i + 1;
+          column = pos - counted + 1;
+          break;
+        }
+        counted += lineLen;
+      }
+      if (line > lines.length) {
+        line = lines.length;
+        column = (lines[lines.length - 1] || "").length + 1;
+      }
+    } else {
+      // Fallback
+      line = 1;
+      column = 1;
+      pos = 0;
+    }
+
+    const currentLineText = lines[line - 1] || "";
+    const prevLineText = line > 1 ? lines[line - 2] : "";
+    const textAround = text.slice(Math.max(0, pos - 40), Math.min(text.length, pos + 40));
+
+    // Analyze specific error patterns
+    let errorTitle = "JSON Syntax Error";
+    let message = rawMessage;
+    let explanation = "The JSON parser encountered unexpected characters or malformed structure.";
+    let fixSuggestion = "Check the syntax at the highlighted line and ensure proper quotes and commas.";
+
+    // Pattern A: Trailing comma before } or ]
+    // Check if right before pos or current token is a comma followed by closing brace/bracket
+    const beforePos = text.slice(Math.max(0, pos - 20), pos).trim();
+    const atPos = text.slice(pos, pos + 20).trim();
+    const lineBeforeCol = currentLineText.slice(0, column - 1).trim();
+
+    if (
+      (atPos.startsWith("}") || atPos.startsWith("]")) &&
+      (beforePos.endsWith(",") || lineBeforeCol.endsWith(",") || /,\s*$/.test(prevLineText))
+    ) {
+      const bracket = atPos[0];
+      errorTitle = `Trailing Comma before '${bracket}'`;
+      message = `Illegal trailing comma found before closing '${bracket}'`;
+      explanation = `The JSON standard (RFC 8259) strictly forbids trailing commas after the last property in an object or element in an array.`;
+      fixSuggestion = `Delete the trailing comma ',' on line ${lineBeforeCol.endsWith(",") ? line : line - 1}, or click '⚡ Auto-Fix JSON'.`;
+    }
+    // Pattern B: Comments in JSON (// or /*)
+    else if (
+      textAround.includes("//") ||
+      textAround.includes("/*") ||
+      currentLineText.trim().startsWith("//") ||
+      currentLineText.trim().startsWith("/*")
+    ) {
+      errorTitle = "Comments Not Allowed in Standard JSON";
+      message = "Found comments ('//' or '/* ... */') in JSON document";
+      explanation = "Standard JSON does not support comments of any kind. JavaScript allows them, but JSON.parse will fail.";
+      fixSuggestion = "Remove all comments from the JSON, or click '⚡ Auto-Fix JSON' to strip them automatically.";
+    }
+    // Pattern C: Single quotes instead of double quotes
+    else if (
+      currentLineText.includes("'") ||
+      textAround.includes("'") ||
+      /[']/.test(currentLineText.slice(Math.max(0, column - 5), column + 5))
+    ) {
+      errorTitle = "Single Quotes Used (Expected Double Quotes)";
+      message = "Single quotes (') found in string or property name";
+      explanation = `JSON requires all strings and property names to be enclosed in standard double quotes ("). Single quotes are valid in JS, but invalid in JSON.`;
+      fixSuggestion = `Replace single quotes (') with double quotes ("), e.g. "key": "value", or click '⚡ Auto-Fix JSON'.`;
+    }
+    // Pattern D: Unquoted property key
+    else if (
+      /([{,]\s*)([a-zA-Z_$][a-zA-Z0-9_$]*)\s*:/.test(currentLineText) ||
+      rawMessage.toLowerCase().includes("expected property name") ||
+      rawMessage.toLowerCase().includes("expected double-quoted property name")
+    ) {
+      const keyMatch = currentLineText.match(/([a-zA-Z_$][a-zA-Z0-9_$]*)\s*:/);
+      const keyName = keyMatch ? keyMatch[1] : "property";
+      errorTitle = `Unquoted Object Key '${keyName}'`;
+      message = `Object key '${keyName}' is missing double quotes`;
+      explanation = `In JSON, all object property keys must be surrounded by double quotes, e.g. "${keyName}": value. Unquoted keys are allowed in JavaScript object literals, but strictly invalid in JSON.`;
+      fixSuggestion = `Wrap the key '${keyName}' in double quotes: "${keyName}": ..., or click '⚡ Auto-Fix JSON'.`;
+    }
+    // Pattern E: Missing comma between properties
+    else if (
+      rawMessage.toLowerCase().includes("expected ','") ||
+      (prevLineText.trim().length > 0 &&
+        !prevLineText.trim().endsWith(",") &&
+        !prevLineText.trim().endsWith("{") &&
+        !prevLineText.trim().endsWith("[") &&
+        (currentLineText.trim().startsWith('"') || currentLineText.trim().startsWith("{")))
+    ) {
+      errorTitle = "Missing Comma Separator";
+      message = `Missing comma between properties or array items`;
+      explanation = `Expected a comma ',' separating properties or array elements. In JSON, every entry (except the last one in a block) must end with a comma.`;
+      fixSuggestion = `Add a comma ',' at the end of line ${line > 1 ? line - 1 : line}.`;
+    }
+    // Pattern F: Unescaped raw newline in string literal
+    else if (rawMessage.toLowerCase().includes("bad control character") || rawMessage.toLowerCase().includes("unterminated string")) {
+      errorTitle = "Unescaped Newline in String Literal";
+      message = "String literal contains raw unescaped line breaks";
+      explanation = `JSON strings cannot contain unescaped line breaks. Multiline scripts or strings must escape newlines as '\\r\\n' or '\\n'.`;
+      fixSuggestion = `Escape the line breaks using '\\r\\n' (for clientscripts) or '\\n', or use the Quick Snippet Converter.`;
+    }
+    // Pattern G: Unbalanced braces/brackets
+    else {
+      const openBraces = (text.match(/\{/g) || []).length;
+      const closeBraces = (text.match(/\}/g) || []).length;
+      const openBrackets = (text.match(/\[/g) || []).length;
+      const closeBrackets = (text.match(/\]/g) || []).length;
+
+      if (openBraces > closeBraces) {
+        errorTitle = "Unclosed Object (Missing '}')";
+        message = `Missing ${openBraces - closeBraces} closing brace(s) '}'`;
+        explanation = `The JSON document opened ${openBraces} '{' but only closed ${closeBraces} '}'.`;
+        fixSuggestion = `Add the missing '}' closing brace(s) at the end of the object.`;
+      } else if (closeBraces > openBraces) {
+        errorTitle = "Extra Closing Brace '}'";
+        message = `Found ${closeBraces - openBraces} extra closing brace(s) '}'`;
+        explanation = `There are more closing braces '}' than opening braces '{'.`;
+        fixSuggestion = `Remove the extra closing brace '}' around line ${line}.`;
+      } else if (openBrackets > closeBrackets) {
+        errorTitle = "Unclosed Array (Missing ']')";
+        message = `Missing ${openBrackets - closeBrackets} closing bracket(s) ']'`;
+        explanation = `The JSON document opened ${openBrackets} '[' but only closed ${closeBrackets} ']'.`;
+        fixSuggestion = `Add the missing ']' closing bracket(s) at the end of the array.`;
+      } else if (closeBrackets > openBrackets) {
+        errorTitle = "Extra Closing Bracket ']'";
+        message = `Found ${closeBrackets - openBrackets} extra closing bracket(s) ']'`;
+        explanation = `There are more closing brackets ']' than opening brackets '['.`;
+        fixSuggestion = `Remove the extra closing bracket ']' around line ${line}.`;
+      }
+    }
+
+    const snippet = this.buildCodeSnippet(lines, line, column);
+
+    return {
+      errorTitle,
+      message,
+      explanation,
+      fixSuggestion,
+      line,
+      column,
+      position: pos,
+      snippet
+    };
+  },
+
+  /**
+   * Intelligently auto-fix common JSON syntax mistakes:
+   * - Strips comments (// and /* * /)
+   * - Converts single-quoted strings and keys to double-quoted strings
+   * - Quotes unquoted keys: { key: 1 } -> { "key": 1 }
+   * - Removes trailing commas before } and ]
+   * - Strips trailing unneeded semicolons
+   */
+  autoFixJson(rawText) {
+    if (!rawText || !rawText.trim()) return { ok: false, error: "Empty input" };
+
+    const appliedFixes = [];
+    let text = rawText;
+
+    // 1. Strip comments (while preserving strings)
+    let strippedComments = false;
+    // Replace /* ... */
+    const noBlock = text.replace(/\/\*[\s\S]*?\*\//g, () => {
+      strippedComments = true;
+      return "";
+    });
+    // Replace // ... (at line end or after whitespace)
+    const noLine = noBlock.replace(/(^|[^\\:])\/\/.*$/gm, (m, prefix) => {
+      strippedComments = true;
+      return prefix;
+    });
+    if (strippedComments) {
+      appliedFixes.push("Stripped JSON comments (// and /* */)");
+      text = noLine;
+    }
+
+    // 2. Fix unquoted keys: e.g. { foo: or , foo:
+    let fixedKeys = false;
+    const keyFixed = text.replace(/([{,]\s*)([a-zA-Z_$][a-zA-Z0-9_$]*)\s*:/g, (match, prefix, key) => {
+      fixedKeys = true;
+      return `${prefix}"${key}":`;
+    });
+    if (fixedKeys) {
+      appliedFixes.push("Enclosed unquoted object keys in double quotes");
+      text = keyFixed;
+    }
+
+    // 3. Fix single quotes to double quotes (for simple strings)
+    let fixedQuotes = false;
+    const quotesFixed = text.replace(/'([^'\\]*(?:\\.[^'\\]*)*)'/g, (match, inner) => {
+      fixedQuotes = true;
+      // Escape any unescaped double quotes inside
+      const escapedInner = inner.replace(/(?<!\\)"/g, '\\"');
+      return `"${escapedInner}"`;
+    });
+    if (fixedQuotes) {
+      appliedFixes.push("Converted single quotes (') to standard double quotes (\")");
+      text = quotesFixed;
+    }
+
+    // 4. Remove trailing commas before } or ]
+    let fixedCommas = false;
+    const commaFixed = text.replace(/,\s*([\}\]])/g, (match, closing) => {
+      fixedCommas = true;
+      return closing;
+    });
+    if (fixedCommas) {
+      appliedFixes.push("Removed illegal trailing commas before '}' or ']'");
+      text = commaFixed;
+    }
+
+    // 5. Test if the result parses
+    try {
+      const parsed = JSON.parse(text);
+      // Re-format cleanly
+      const fixedFormatted = JSON.stringify(parsed, null, 2);
+      return {
+        ok: true,
+        fixedText: fixedFormatted,
+        appliedFixes
+      };
+    } catch (e) {
+      return {
+        ok: false,
+        error: e.message,
+        intermediate: text,
+        appliedFixes
+      };
+    }
+  },
+
+  /**
+   * Validate JavaScript code with Acorn and Bracket-Stack Scanner.
+   * Pinpoints exact line and column, visual snippet with pointer,
+   * error diagnosis, and fix instructions.
+   *
+   * @param {string} jsCode - Clean/readable JavaScript code
+   * @param {Object} options - Parser options
+   */
+  validateJs(jsCode, options = {}) {
+    if (!jsCode || !jsCode.trim()) {
+      return {
+        valid: true,
+        isEmpty: true,
+        errorTitle: null,
+        message: null,
+        line: null,
+        column: null,
+        snippet: null,
+        fixSuggestion: null
+      };
+    }
+
+    const lines = jsCode.split(/\r?\n/);
+
+    // 1. First run Bracket/Brace Stack Analyzer for precise unclosed bracket detection
+    const bracketCheck = this.scanBrackets(jsCode);
+
+    // 2. Run Acorn (or fallback new Function) for full AST syntax checking
+    const acornInstance = this.getAcornInstance();
+
+    if (acornInstance) {
+      try {
+        acornInstance.parse(jsCode, {
+          ecmaVersion: "latest",
+          locations: true,
+          allowReturnOutsideFunction: true,
+          allowAwaitOutsideFunction: true,
+          allowImportExportEverywhere: true,
+          ...options
+        });
+
+        // Even if Acorn passed (or had no statement after unclosed bracket), verify bracket check
+        if (bracketCheck && bracketCheck.error) {
+          const snippet = this.buildCodeSnippet(lines, bracketCheck.line, bracketCheck.column);
+          return {
+            valid: false,
+            isEmpty: false,
+            errorTitle: bracketCheck.errorTitle,
+            message: bracketCheck.message,
+            explanation: bracketCheck.explanation,
+            fixSuggestion: bracketCheck.fixSuggestion,
+            line: bracketCheck.line,
+            column: bracketCheck.column,
+            snippet,
+            canAutoFix: bracketCheck.canAutoFix || false
+          };
+        }
+
+        return {
+          valid: true,
+          isEmpty: false,
+          errorTitle: null,
+          message: null,
+          line: null,
+          column: null,
+          snippet: null,
+          fixSuggestion: null
+        };
+      } catch (acornErr) {
+        // If Acorn caught an error, enrich with bracketCheck if relevant (e.g. unexpected EOF due to unclosed brace)
+        const enriched = this.diagnoseJsError(jsCode, acornErr, bracketCheck);
+        return enriched;
+      }
+    } else {
+      // Fallback if Acorn is not yet loaded: use new Function with bracket analysis
+      try {
+        // Wrap in function to allow top-level return statements (standard in low-code clientscripts)
+        new Function(`return (function(){ ${jsCode} \n});`)();
+
+        if (bracketCheck && bracketCheck.error) {
+          const snippet = this.buildCodeSnippet(lines, bracketCheck.line, bracketCheck.column);
+          return {
+            valid: false,
+            isEmpty: false,
+            errorTitle: bracketCheck.errorTitle,
+            message: bracketCheck.message,
+            explanation: bracketCheck.explanation,
+            fixSuggestion: bracketCheck.fixSuggestion,
+            line: bracketCheck.line,
+            column: bracketCheck.column,
+            snippet,
+            canAutoFix: bracketCheck.canAutoFix || false
+          };
+        }
+
+        return {
+          valid: true,
+          isEmpty: false,
+          errorTitle: null,
+          message: null,
+          line: null,
+          column: null,
+          snippet: null,
+          fixSuggestion: null
+        };
+      } catch (fnErr) {
+        return this.diagnoseJsFallbackError(jsCode, fnErr.message, bracketCheck);
+      }
+    }
+  },
+
+  /**
+   * Resolve Acorn parser instance from globalThis or window
+   */
+  getAcornInstance() {
+    if (typeof globalThis !== "undefined" && globalThis.acorn) {
+      return globalThis.acorn;
+    }
+    if (typeof window !== "undefined" && window.acorn) {
+      return window.acorn;
+    }
+    return null;
+  },
+
+  /**
+   * Scans parentheses, braces, and square brackets while skipping strings,
+   * template literals, and comments. Traces exact line and column of unclosed bracket.
+   */
+  scanBrackets(code) {
+    const stack = [];
+    const lines = code.split(/\r?\n/);
+    let inStr = null;
+    let inTemplate = false;
+    let inBlockComment = false;
+
+    for (let l = 0; l < lines.length; l++) {
+      const line = lines[l];
+      let inLineComment = false;
+
+      for (let c = 0; c < line.length; c++) {
+        const ch = line[c];
+        const next = line[c + 1];
+
+        if (inLineComment) continue;
+
+        if (inBlockComment) {
+          if (ch === "*" && next === "/") {
+            inBlockComment = false;
+            c++;
+          }
+          continue;
+        }
+
+        if (inStr) {
+          if (ch === "\\") {
+            c++; // skip escaped char
+            continue;
+          }
+          if (ch === inStr) {
+            inStr = null;
+          }
+          continue;
+        }
+
+        if (inTemplate) {
+          if (ch === "\\") {
+            c++;
+            continue;
+          }
+          if (ch === "`") {
+            inTemplate = false;
+            continue;
+          }
+          // Inside template literal expression ${ ... }
+          if (ch === "$" && next === "{") {
+            stack.push({ char: "${", line: l + 1, column: c + 1 });
+            c++;
+            continue;
+          }
+        }
+
+        // Check comment starts
+        if (ch === "/" && next === "/") {
+          inLineComment = true;
+          c++;
+          continue;
+        }
+        if (ch === "/" && next === "*") {
+          inBlockComment = true;
+          c++;
+          continue;
+        }
+
+        // Check string starts
+        if (ch === '"' || ch === "'") {
+          inStr = ch;
+          continue;
+        }
+        if (ch === "`") {
+          inTemplate = true;
+          continue;
+        }
+
+        // Bracket checking
+        if (ch === "(" || ch === "{" || ch === "[") {
+          stack.push({ char: ch, line: l + 1, column: c + 1 });
+        } else if (ch === ")" || ch === "}" || ch === "]") {
+          const top = stack.pop();
+          if (!top) {
+            return {
+              error: true,
+              errorTitle: `Unexpected Extra Closing '${ch}'`,
+              message: `Found closing bracket '${ch}' with no matching opening bracket`,
+              explanation: `There is no opening bracket matching this '${ch}'. It might be a stray bracket or copy-paste error.`,
+              fixSuggestion: `Remove the extra closing bracket '${ch}' at line ${l + 1}, column ${c + 1}.`,
+              line: l + 1,
+              column: c + 1,
+              char: ch
+            };
+          }
+
+          const isMatching =
+            (top.char === "(" && ch === ")") ||
+            (top.char === "{" && ch === "}") ||
+            (top.char === "[" && ch === "]") ||
+            (top.char === "${" && ch === "}");
+
+          if (!isMatching) {
+            const expected = top.char === "(" ? ")" : top.char === "{" ? "}" : top.char === "[" ? "]" : "}";
+            return {
+              error: true,
+              errorTitle: `Mismatched Bracket '${ch}'`,
+              message: `Expected '${expected}' to close '${top.char}' opened at line ${top.line}, but found '${ch}'`,
+              explanation: `Brackets must be closed in reverse order of how they were opened. The block opened with '${top.char}' at line ${top.line}, column ${top.column} was closed with the wrong bracket '${ch}'.`,
+              fixSuggestion: `Change '${ch}' to '${expected}' at line ${l + 1}, column ${c + 1}, or check for a missing bracket inside that block.`,
+              line: l + 1,
+              column: c + 1,
+              char: ch
+            };
+          }
+        }
+      }
+    }
+
+    if (stack.length > 0) {
+      const unclosed = stack[stack.length - 1];
+      const needed = unclosed.char === "(" ? ")" : unclosed.char === "{" ? "}" : unclosed.char === "[" ? "]" : "}";
+      return {
+        error: true,
+        errorTitle: `Unclosed Bracket '${unclosed.char}' (Missing '${needed}')`,
+        message: `Block opened with '${unclosed.char}' at line ${unclosed.line}, column ${unclosed.column} was never closed`,
+        explanation: `A code block, parameter list, or expression was opened with '${unclosed.char}' but no matching '${needed}' was found before the end of the file.`,
+        fixSuggestion: `Add the missing '${needed}' at the end of the block or file to close '${unclosed.char}'.`,
+        line: unclosed.line,
+        column: unclosed.column,
+        char: unclosed.char,
+        needed,
+        canAutoFix: true
+      };
+    }
+
+    return null;
+  },
+
+  /**
+   * Diagnose Acorn error into friendly message and fix suggestion
+   */
+  diagnoseJsError(code, err, bracketCheck) {
+    const lines = code.split(/\r?\n/);
+    const line = err.loc?.line || 1;
+    const column = (err.loc?.column || 0) + 1; // 1-based column
+    const rawMsg = err.message || "";
+
+    let errorTitle = "JavaScript Syntax Error";
+    let message = rawMsg;
+    let explanation = "The JavaScript parser encountered invalid syntax.";
+    let fixSuggestion = "Check the syntax at the highlighted line.";
+
+    // If Acorn complains of unexpected end of input or unexpected token at EOF,
+    // and our bracket checker identified an unclosed bracket, use that superior diagnosis!
+    if (
+      bracketCheck &&
+      bracketCheck.error &&
+      (rawMsg.includes("Unexpected token") || rawMsg.includes("Unexpected end of input") || line >= lines.length)
+    ) {
+      return {
+        valid: false,
+        isEmpty: false,
+        errorTitle: bracketCheck.errorTitle,
+        message: bracketCheck.message,
+        explanation: bracketCheck.explanation,
+        fixSuggestion: bracketCheck.fixSuggestion,
+        line: bracketCheck.line,
+        column: bracketCheck.column,
+        snippet: this.buildCodeSnippet(lines, bracketCheck.line, bracketCheck.column),
+        canAutoFix: bracketCheck.canAutoFix || false
+      };
+    }
+
+    if (rawMsg.includes("Unterminated string constant")) {
+      errorTitle = "Unclosed String Literal";
+      message = "Unterminated string constant (missing closing quote)";
+      explanation = "A string literal was opened with ' or \" but was not closed on the same line.";
+      fixSuggestion = `Add the matching closing quote (' or ") at the end of the string, or use backticks (\`...\`) for multi-line strings.`;
+    } else if (rawMsg.includes("Unterminated template")) {
+      errorTitle = "Unclosed Template Literal";
+      message = "Unterminated template literal (missing closing backtick `)";
+      explanation = "A template string was opened with ` but no closing backtick was found.";
+      fixSuggestion = "Add a closing backtick (`) at the end of the template literal.";
+    } else if (rawMsg.includes("Missing catch or finally clause")) {
+      errorTitle = "Missing 'catch' or 'finally' after 'try'";
+      message = "A 'try' block must be followed by 'catch' or 'finally'";
+      explanation = "In JavaScript, a try block cannot stand alone without an error handler.";
+      fixSuggestion = "Add 'catch (error) { ... }' or 'finally { ... }' immediately after the try block.";
+    } else if (rawMsg.includes("Unexpected token")) {
+      const tokenMatch = rawMsg.match(/Unexpected token\s*\(?([^)]*)\)?/);
+      const token = tokenMatch ? tokenMatch[1] : "";
+      errorTitle = `Unexpected Token in JavaScript`;
+      message = `Syntax error: unexpected character or token near line ${line}, col ${column}`;
+      explanation = `The JavaScript parser encountered an unexpected token. This is often caused by an extra comma, missing semicolon, or typo.`;
+      fixSuggestion = `Check line ${line} for misplaced commas, double operators, or unclosed expressions.`;
+    }
+
+    const snippet = this.buildCodeSnippet(lines, line, column);
+
+    return {
+      valid: false,
+      isEmpty: false,
+      errorTitle,
+      message,
+      explanation,
+      fixSuggestion,
+      line,
+      column,
+      snippet,
+      canAutoFix: false
+    };
+  },
+
+  /**
+   * Fallback diagnosis when Acorn is absent
+   */
+  diagnoseJsFallbackError(code, rawMsg, bracketCheck) {
+    const lines = code.split(/\r?\n/);
+    if (bracketCheck && bracketCheck.error) {
+      return {
+        valid: false,
+        isEmpty: false,
+        errorTitle: bracketCheck.errorTitle,
+        message: bracketCheck.message,
+        explanation: bracketCheck.explanation,
+        fixSuggestion: bracketCheck.fixSuggestion,
+        line: bracketCheck.line,
+        column: bracketCheck.column,
+        snippet: this.buildCodeSnippet(lines, bracketCheck.line, bracketCheck.column),
+        canAutoFix: bracketCheck.canAutoFix || false
+      };
+    }
+
+    return {
+      valid: false,
+      isEmpty: false,
+      errorTitle: "JavaScript Syntax Error",
+      message: rawMsg,
+      explanation: "JavaScript syntax evaluation failed.",
+      fixSuggestion: "Review the script for unmatched brackets, missing quotes, or typos.",
+      line: 1,
+      column: 1,
+      snippet: this.buildCodeSnippet(lines, 1, 1),
+      canAutoFix: false
+    };
+  },
+
+  /**
+   * Build a formatted code snippet showing context lines around the error
+   * with line numbers, error highlighting, and an exact column pointer.
+   */
+  buildCodeSnippet(lines, errorLine, errorCol, contextRadius = 2) {
+    const totalLines = lines.length;
+    const startLine = Math.max(1, errorLine - contextRadius);
+    const endLine = Math.min(totalLines, errorLine + contextRadius);
+
+    const snippetLines = [];
+    for (let i = startLine; i <= endLine; i++) {
+      const lineText = lines[i - 1] || "";
+      const isError = i === errorLine;
+      snippetLines.push({
+        lineNum: i,
+        text: lineText,
+        isError
+      });
+    }
+
+    // Build visual pointer string
+    const colOffset = Math.max(0, errorCol - 1);
+    const pointer = " ".repeat(colOffset) + "^";
+
+    return {
+      startLine,
+      endLine,
+      errorLine,
+      errorCol,
+      lines: snippetLines,
+      pointer
+    };
+  },
+
+  /**
+   * Validate both the JSON structure and all embedded clientscripts
+   * inside the JSON bundle.
+   *
+   * @param {string} jsonStr - Raw JSON text
+   * @param {Object} JsonEngineRef - Reference to JsonEngine
+   * @returns {Object} Comprehensive bundle diagnostic
+   */
+  validateBundle(jsonStr, JsonEngineRef) {
+    const jsonDiag = this.validateJson(jsonStr);
+    if (!jsonDiag.valid) {
+      return {
+        jsonValid: false,
+        jsonDiag,
+        scriptsChecked: 0,
+        scriptErrors: []
+      };
+    }
+
+    // JSON is syntactically valid! Now check embedded client scripts.
+    const rootObj = jsonDiag.data;
+    const scriptErrors = [];
+    let scriptsChecked = 0;
+
+    if (JsonEngineRef && typeof JsonEngineRef.findAllClientScripts === "function") {
+      const blocks = JsonEngineRef.findAllClientScripts(rootObj);
+      for (const block of blocks) {
+        for (const [key, scriptObj] of Object.entries(block.scripts)) {
+          if (!scriptObj.exists || !scriptObj.readable.trim()) continue;
+          scriptsChecked++;
+
+          const jsDiag = this.validateJs(scriptObj.readable);
+          if (!jsDiag.valid) {
+            scriptErrors.push({
+              path: block.path,
+              scriptKey: key,
+              crlf: scriptObj.hasCrLf,
+              diagnostic: jsDiag
+            });
+          }
+        }
+      }
+    }
+
+    return {
+      jsonValid: true,
+      jsonDiag,
+      scriptsChecked,
+      hasScriptErrors: scriptErrors.length > 0,
+      scriptErrors
+    };
+  }
+};
+
+
 /* --- js/json-engine.js --- */
 /**
  * JSON Engine for InoJson Script Compare & Diff
@@ -933,6 +1730,7 @@ const DiffEngine = {
 
 
 
+
 class DiffModal {
   constructor(options = {}) {
     this.container = null;
@@ -951,6 +1749,8 @@ class DiffModal {
     this.modifiedRightScripts = new Map(); // scriptKey -> editedReadableText (New)
     this.mergeHistory = []; // Undo stack: [{ scriptKey, leftText, rightText }]
     this.cmModalInstance = null;
+    this.currentEditorDiag = null;
+    this.activeCmErrorLine = null;
 
     this.onApplyCallback = options.onApply || (() => {});
     this.onCloseCallback = options.onClose || (() => {});
@@ -1408,6 +2208,9 @@ class DiffModal {
    * Side-by-Side Split View with Line-by-Line Merging Controls
    */
   renderSplitView(container, diff, leftText, rightText) {
+    const leftVal = Validator.validateJs(leftText);
+    const rightVal = Validator.validateJs(rightText);
+
     container.innerHTML = `
       <div class="split-diff-container">
         <!-- Left Pane: Old (Base) -->
@@ -1416,6 +2219,9 @@ class DiffModal {
             <div class="pane-title-group">
               <span class="pane-title">Old / Base JSON Script</span>
               <span class="tag-role">Receiving Merged Lines</span>
+              <span class="val-pill ${leftVal.valid ? "pill-valid" : "pill-error"}" title="${leftVal.valid ? "Valid JavaScript syntax" : this.escapeHtml(leftVal.fixSuggestion || leftVal.message)}">
+                ${leftVal.valid ? "✓ Valid JS" : `✖ JS Error (L${leftVal.line})`}
+              </span>
             </div>
             <span class="pane-lines">${diff.stats.leftTotal} lines</span>
           </div>
@@ -1493,6 +2299,9 @@ class DiffModal {
             <div class="pane-title-group">
               <span class="pane-title">New / Updated JSON Script</span>
               <span class="tag-role">Source of Changes</span>
+              <span class="val-pill ${rightVal.valid ? "pill-valid" : "pill-error"}" title="${rightVal.valid ? "Valid JavaScript syntax" : this.escapeHtml(rightVal.fixSuggestion || rightVal.message)}">
+                ${rightVal.valid ? "✓ Valid JS" : `✖ JS Error (L${rightVal.line})`}
+              </span>
             </div>
             <div class="pane-actions">
               <span class="pane-lines">${diff.stats.rightTotal} lines</span>
@@ -1700,6 +2509,9 @@ class DiffModal {
                 Full JSON Bundle Editor
               </button>
             </div>
+            <div class="editor-val-badge val-ok" id="editorValBadge" title="Click to view syntax diagnostics">
+              ✓ Valid JavaScript
+            </div>
           </div>
           <div class="subnav-right">
             <span class="editor-cursor-pos" id="editorCursorPos">Ln 1, Col 1</span>
@@ -1709,6 +2521,9 @@ class DiffModal {
             </button>
           </div>
         </div>
+
+        <!-- Real-time Diagnostics Drawer -->
+        <div class="editor-diagnostics-drawer hidden" id="editorDiagDrawer"></div>
 
         <!-- CodeMirror Mount Area -->
         <div class="codemirror-mount" id="modalCodeMirrorMount"></div>
@@ -1751,20 +2566,34 @@ class DiffModal {
         if (posEl) posEl.textContent = `Ln ${pos.line + 1}, Col ${pos.ch + 1}`;
       });
 
-      // Live change sync
-      this.cmModalInstance.on("change", () => {
+      // Live change sync & validation
+      const runValidation = () => {
+        if (!this.cmModalInstance) return;
         const val = this.cmModalInstance.getValue();
         if (this.editorSubMode === "js") {
           this.modifiedRightScripts.set(this.activeScriptKey, val);
+          const diag = Validator.validateJs(val);
+          this.updateEditorDiagnostics(diag);
         } else {
           try {
             this.rightJsonObj = JSON.parse(val);
             this.rightBlocks = JsonEngine.findAllClientScripts(this.rightJsonObj);
           } catch (e) {}
+          const diag = Validator.validateJson(val);
+          this.updateEditorDiagnostics(diag);
         }
+      };
+
+      let debounceTimer = null;
+      this.cmModalInstance.on("change", () => {
+        clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(runValidation, 150);
       });
 
-      setTimeout(() => this.cmModalInstance.refresh(), 50);
+      setTimeout(() => {
+        this.cmModalInstance.refresh();
+        runValidation();
+      }, 60);
     } else {
       // Fallback textarea if CodeMirror script isn't loaded
       mountEl.innerHTML = `<textarea class="code-textarea" id="scriptTextarea" style="width:100%;height:100%;">${initialCode}</textarea>`;
@@ -1774,8 +2603,21 @@ class DiffModal {
       });
     }
 
-    // Return to Diff actions
+    // Return to Diff actions with syntax check warning
     const returnToDiffHandler = () => {
+      if (this.currentEditorDiag && !this.currentEditorDiag.valid) {
+        const proceed = window.confirm(
+          `⚠️ JavaScript Syntax Warning:\n` +
+          `Your edited script contains a syntax error at Line ${this.currentEditorDiag.line || 1}, Col ${this.currentEditorDiag.column || 1}:\n` +
+          `"${this.currentEditorDiag.message}"\n\n` +
+          `Fix suggestion: ${this.currentEditorDiag.fixSuggestion || "Please fix syntax before committing."}\n\n` +
+          `Do you want to proceed back to Diff state anyway?`
+        );
+        if (!proceed) {
+          this.jumpToErrorInEditor(this.currentEditorDiag.line, this.currentEditorDiag.column);
+          return;
+        }
+      }
       this.switchViewMode("split");
       this.showToast("Returned to Diff & Merge state with your edits!");
     };
@@ -1907,6 +2749,21 @@ class DiffModal {
         this.modifiedRightScripts.get(scriptKey) ??
         (leftBlock?.scripts?.[scriptKey]?.readable || "");
 
+      // Pre-apply JavaScript syntax safety check
+      if (mergedCleanJs && mergedCleanJs.trim()) {
+        const diag = Validator.validateJs(mergedCleanJs);
+        if (!diag.valid) {
+          const proceed = window.confirm(
+            `⚠️ JavaScript Syntax Alert:\n` +
+            `Script '${scriptKey}' contains a syntax error at Line ${diag.line || 1}, Col ${diag.column || 1} (${diag.errorTitle || "Syntax Error"}):\n` +
+            `"${diag.message}"\n\n` +
+            `How to fix: ${diag.fixSuggestion || "Correct the syntax at the highlighted line."}\n\n` +
+            `Saving broken code may cause runtime failures in production. Do you want to apply anyway?`
+          );
+          if (!proceed) return;
+        }
+      }
+
       if (target === "old" || target === "both") {
         if (leftBlock) {
           const originalHadCrLf = leftBlock.scripts[scriptKey]?.hasCrLf ?? true;
@@ -1941,6 +2798,108 @@ class DiffModal {
     this.showToast(`💾 Applied merged changes to ${targetLabel} ready for prod commit!`);
   }
 
+  updateEditorDiagnostics(diag) {
+    this.currentEditorDiag = diag;
+    const badge = this.container.querySelector("#editorValBadge");
+    const drawer = this.container.querySelector("#editorDiagDrawer");
+
+    if (this.activeCmErrorLine !== null && this.cmModalInstance) {
+      this.cmModalInstance.removeLineClass(this.activeCmErrorLine, "background", "cm-val-error-line");
+      this.activeCmErrorLine = null;
+    }
+
+    if (!badge || !drawer) return;
+
+    if (diag.valid) {
+      badge.className = "editor-val-badge val-ok";
+      badge.innerHTML = `✓ Valid ${this.editorSubMode === "js" ? "JavaScript" : "JSON"} (0 errors)`;
+      drawer.classList.add("hidden");
+      drawer.innerHTML = "";
+    } else {
+      badge.className = "editor-val-badge val-err";
+      badge.innerHTML = `✖ Line ${diag.line || 1}, Col ${diag.column || 1}: ${this.escapeHtml(diag.errorTitle || "Syntax Error")}`;
+
+      const snippetHtml = diag.snippet
+        ? `
+        <div class="diag-drawer-snippet">
+          ${diag.snippet.lines
+            .map(
+              l => `
+            <div class="val-snippet-line ${l.isError ? "val-error-line" : ""}">
+              <span class="val-line-no">${l.lineNum}</span>
+              <span class="val-line-code">${this.escapeHtml(l.text)}</span>
+            </div>
+          `
+            )
+            .join("")}
+          <div class="val-pointer-line">
+            <span class="val-line-no"></span>
+            <span class="val-pointer">${this.escapeHtml(diag.snippet.pointer)}--- Error here</span>
+          </div>
+        </div>
+      `
+        : "";
+
+      drawer.innerHTML = `
+        <div class="diag-drawer-header">
+          <div class="diag-drawer-title">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+            <span>${this.escapeHtml(diag.errorTitle || "Syntax Error")} (Line ${diag.line || 1}, Column ${diag.column || 1})</span>
+          </div>
+          <div class="diag-drawer-actions">
+            <button class="btn-diag-jump" id="btnModalJumpError">
+              Jump to Line ${diag.line || 1}
+            </button>
+          </div>
+        </div>
+        <div class="diag-drawer-content">
+          ${snippetHtml}
+          <div class="diag-drawer-advice">
+            <div class="diag-advice-why">
+              <strong>Why:</strong> ${this.escapeHtml(diag.explanation || diag.message)}
+            </div>
+            <div class="diag-advice-fix">
+              <strong>How to fix:</strong> ${this.escapeHtml(diag.fixSuggestion || "Fix the syntax at the highlighted line.")}
+            </div>
+          </div>
+        </div>
+      `;
+
+      drawer.classList.remove("hidden");
+
+      // Highlight error line in CodeMirror
+      if (this.cmModalInstance && diag.line) {
+        this.activeCmErrorLine = diag.line - 1;
+        this.cmModalInstance.addLineClass(this.activeCmErrorLine, "background", "cm-val-error-line");
+      }
+
+      // Jump button in drawer & badge click
+      drawer.querySelector("#btnModalJumpError")?.addEventListener("click", () => {
+        this.jumpToErrorInEditor(diag.line, diag.column);
+      });
+      badge.onclick = () => {
+        this.jumpToErrorInEditor(diag.line, diag.column);
+      };
+    }
+  }
+
+  jumpToErrorInEditor(line = 1, col = 1) {
+    if (!this.cmModalInstance) return;
+    this.cmModalInstance.setCursor({ line: Math.max(0, line - 1), ch: Math.max(0, col - 1) });
+    this.cmModalInstance.scrollIntoView({ line: Math.max(0, line - 1), ch: Math.max(0, col - 1) }, 100);
+    this.cmModalInstance.focus();
+  }
+
+  escapeHtml(str) {
+    if (typeof str !== "string") return "";
+    return str
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
+  }
+
   truncate(str = "", maxLen = 35) {
     const trimmed = (str || "").trim();
     return trimmed.length > maxLen ? trimmed.slice(0, maxLen) + "…" : trimmed;
@@ -1964,8 +2923,10 @@ class DiffModal {
 /* --- js/app.js --- */
 /**
  * Main Application Orchestrator for InoJson Script Compare & Diff
- * Features CodeMirror JSON editing on both panels and integration with DiffModal.
+ * Features CodeMirror JSON editing on both panels, deep JSON & JavaScript validation,
+ * actionable error diagnostics, intelligent auto-fix, and integration with DiffModal.
  */
+
 
 
 
@@ -1980,6 +2941,8 @@ class InoJsonApp {
     this.rightStatusEl = document.getElementById("rightStatus");
     this.leftScriptsListEl = document.getElementById("leftScriptsList");
     this.rightScriptsListEl = document.getElementById("rightScriptsList");
+    this.leftValidationPanel = document.getElementById("leftValidationPanel");
+    this.rightValidationPanel = document.getElementById("rightValidationPanel");
     this.compareSummaryEl = document.getElementById("compareSummary");
     this.btnOpenDiffModal = document.getElementById("btnOpenDiffModal");
 
@@ -1987,6 +2950,8 @@ class InoJsonApp {
     this.cmRight = null;
     this.leftParsed = null;
     this.rightParsed = null;
+    this.leftReport = null;
+    this.rightReport = null;
     this.lineEndingPreference = "crlf";
 
     // Initialize Diff Modal with two-way merge support and full code editor
@@ -2012,6 +2977,7 @@ class InoJsonApp {
     this.initCodeMirrorPanels();
     this.bindEvents();
     this.bindFileUploads();
+    this.bindValidationActions();
     this.bindQuickConverter();
 
     // Load initial realistic sample data
@@ -2243,17 +3209,22 @@ class InoJsonApp {
     const leftText = this.getLeftText().trim();
     const rightText = this.getRightText().trim();
 
-    // Parse Left
-    const leftRes = JsonEngine.parse(leftText);
-    this.updateStatusBadge(this.leftStatusEl, leftRes, "Original");
-    this.leftParsed = leftRes.ok ? leftRes.data : null;
+    // 1. Run deep bundle validation (JSON structure + embedded client scripts)
+    this.leftReport = Validator.validateBundle(leftText, JsonEngine);
+    this.rightReport = Validator.validateBundle(rightText, JsonEngine);
 
-    // Parse Right
-    const rightRes = JsonEngine.parse(rightText);
-    this.updateStatusBadge(this.rightStatusEl, rightRes, "Modified");
-    this.rightParsed = rightRes.ok ? rightRes.data : null;
+    // 2. Render dedicated Validation Diagnostics Panels
+    this.renderValidationPanel("left", this.leftReport, leftText);
+    this.renderValidationPanel("right", this.rightReport, rightText);
 
-    // Detect client scripts
+    // 3. Update top status tags
+    this.updateStatusBadge(this.leftStatusEl, this.leftReport, leftText);
+    this.updateStatusBadge(this.rightStatusEl, this.rightReport, rightText);
+
+    this.leftParsed = this.leftReport.jsonValid ? this.leftReport.jsonDiag.data : null;
+    this.rightParsed = this.rightReport.jsonValid ? this.rightReport.jsonDiag.data : null;
+
+    // 4. Detect and render client scripts chips
     let leftBlocks = [];
     let rightBlocks = [];
 
@@ -2274,18 +3245,231 @@ class InoJsonApp {
     this.updateComparisonSummary(leftBlocks, rightBlocks);
   }
 
-  updateStatusBadge(el, parseRes, label) {
+  renderValidationPanel(side, report, rawText) {
+    const container = side === "left" ? this.leftValidationPanel : this.rightValidationPanel;
+    if (!container) return;
+
+    // Case 1: Empty input
+    if (report.jsonDiag.isEmpty) {
+      container.innerHTML = `
+        <div class="val-bar-empty">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+          <span>Paste or upload a JSON bundle above to begin syntax validation</span>
+        </div>
+      `;
+      return;
+    }
+
+    // Case 2: JSON Syntax Error
+    if (!report.jsonValid) {
+      const diag = report.jsonDiag;
+      const snippetHtml = diag.snippet
+        ? `
+          <div class="val-snippet-box">
+            ${diag.snippet.lines
+              .map(
+                l => `
+              <div class="val-snippet-line ${l.isError ? "val-error-line" : ""}">
+                <span class="val-line-no">${l.lineNum}</span>
+                <span class="val-line-code">${this.escapeHtml(l.text)}</span>
+              </div>
+            `
+              )
+              .join("")}
+            <div class="val-pointer-line">
+              <span class="val-line-no"></span>
+              <span class="val-pointer">${this.escapeHtml(diag.snippet.pointer)}--- Error detected here</span>
+            </div>
+          </div>
+        `
+        : "";
+
+      container.innerHTML = `
+        <div class="val-card-error">
+          <div class="val-card-header">
+            <div class="val-header-left">
+              <svg class="val-icon-error" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+              <span class="val-title">${this.escapeHtml(diag.errorTitle || "JSON Syntax Error")}</span>
+              <span class="val-loc-pill">Line ${diag.line || 1}, Col ${diag.column || 1}</span>
+            </div>
+            <div class="val-header-actions">
+              ${
+                diag.canAutoFix
+                  ? `<button class="btn-val-autofix" data-side="${side}" title="Automatically fix trailing commas, unquoted keys, single quotes, or comments">
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                      ⚡ Auto-Fix JSON
+                    </button>`
+                  : ""
+              }
+              <button class="btn-val-jump" data-side="${side}" data-line="${diag.line || 1}" data-col="${diag.column || 1}" title="Focus and scroll to error line in editor">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+                Jump to Line
+              </button>
+            </div>
+          </div>
+
+          ${snippetHtml}
+
+          <div class="val-details">
+            <div class="val-reason">
+              <span class="val-label">Problem:</span>
+              <span class="val-text">${this.escapeHtml(diag.explanation)}</span>
+            </div>
+            <div class="val-fix">
+              <span class="val-label">How to fix:</span>
+              <span class="val-text">${this.escapeHtml(diag.fixSuggestion)}</span>
+            </div>
+          </div>
+        </div>
+      `;
+      return;
+    }
+
+    // Case 3: JSON is valid, BUT embedded JavaScript has a syntax error!
+    if (report.hasScriptErrors && report.scriptErrors.length > 0) {
+      const firstErr = report.scriptErrors[0];
+      const jsDiag = firstErr.diagnostic;
+      const snippetHtml = jsDiag.snippet
+        ? `
+          <div class="val-snippet-box">
+            ${jsDiag.snippet.lines
+              .map(
+                l => `
+              <div class="val-snippet-line ${l.isError ? "val-error-line" : ""}">
+                <span class="val-line-no">${l.lineNum}</span>
+                <span class="val-line-code">${this.escapeHtml(l.text)}</span>
+              </div>
+            `
+              )
+              .join("")}
+            <div class="val-pointer-line">
+              <span class="val-line-no"></span>
+              <span class="val-pointer">${this.escapeHtml(jsDiag.snippet.pointer)}--- JS syntax error</span>
+            </div>
+          </div>
+        `
+        : "";
+
+      container.innerHTML = `
+        <div class="val-card-warn">
+          <div class="val-card-header">
+            <div class="val-header-left">
+              <svg class="val-icon-warn" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+              <span class="val-title">JavaScript Error in ${this.escapeHtml(firstErr.scriptKey)}</span>
+              <span class="val-loc-pill">Line ${jsDiag.line || 1}, Col ${jsDiag.column || 1}</span>
+            </div>
+            <div class="val-header-actions">
+              <button class="btn-val-fix-diff" data-script="${this.escapeHtml(firstErr.scriptKey)}" title="Launch Diff & Edit Studio directly to this script">
+                🛠️ Fix in Diff Studio
+              </button>
+            </div>
+          </div>
+
+          ${snippetHtml}
+
+          <div class="val-details">
+            <div class="val-reason">
+              <span class="val-label">Problem:</span>
+              <span class="val-text">${this.escapeHtml(jsDiag.explanation || jsDiag.message)}</span>
+            </div>
+            <div class="val-fix">
+              <span class="val-label">How to fix:</span>
+              <span class="val-text">${this.escapeHtml(jsDiag.fixSuggestion)}</span>
+            </div>
+          </div>
+        </div>
+      `;
+      return;
+    }
+
+    // Case 4: Everything is valid!
+    const lineCount = rawText ? rawText.split(/\r?\n/).length : 0;
+    container.innerHTML = `
+      <div class="val-bar-valid">
+        <div class="val-bar-left">
+          <svg class="val-icon-success" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+          <span class="val-status-text">Valid JSON Structure (${lineCount} lines)</span>
+          <span class="val-badge-clean">0 syntax errors</span>
+        </div>
+        <div class="val-bar-right">
+          <span class="val-script-status">✓ ${report.scriptsChecked} embedded script(s) valid JS</span>
+        </div>
+      </div>
+    `;
+  }
+
+  bindValidationActions() {
+    const handlePanelClick = (e, side) => {
+      // 1. Auto-Fix JSON button
+      const btnAutoFix = e.target.closest(".btn-val-autofix");
+      if (btnAutoFix) {
+        const rawText = side === "left" ? this.getLeftText() : this.getRightText();
+        const fixResult = Validator.autoFixJson(rawText);
+        if (fixResult.ok) {
+          if (side === "left") {
+            this.setLeftJson(fixResult.fixedText);
+          } else {
+            this.setRightJson(fixResult.fixedText);
+          }
+          this.analyzeInputs();
+          const fixList = fixResult.appliedFixes.length ? fixResult.appliedFixes.join(", ") : "Formatted JSON";
+          this.showToast(`⚡ Auto-fixed JSON: ${fixList}!`);
+        } else {
+          this.showToast("Could not auto-fix all syntax errors. Please inspect the highlighted line.");
+        }
+        return;
+      }
+
+      // 2. Jump to line button
+      const btnJump = e.target.closest(".btn-val-jump");
+      if (btnJump) {
+        const line = parseInt(btnJump.dataset.line, 10);
+        const col = parseInt(btnJump.dataset.col, 10) || 1;
+        const cm = side === "left" ? this.cmLeft : this.cmRight;
+        if (cm && !isNaN(line)) {
+          cm.setCursor({ line: Math.max(0, line - 1), ch: Math.max(0, col - 1) });
+          cm.scrollIntoView({ line: Math.max(0, line - 1), ch: Math.max(0, col - 1) }, 100);
+          cm.focus();
+
+          // Visual flash
+          cm.addLineClass(line - 1, "background", "cm-val-flash");
+          setTimeout(() => cm.removeLineClass(line - 1, "background", "cm-val-flash"), 1500);
+        }
+        return;
+      }
+
+      // 3. Fix script in Diff Studio button
+      const btnFixDiff = e.target.closest(".btn-val-fix-diff");
+      if (btnFixDiff) {
+        const scriptKey = btnFixDiff.dataset.script || "prescript";
+        this.openDiffDialog(scriptKey);
+        return;
+      }
+    };
+
+    this.leftValidationPanel?.addEventListener("click", e => handlePanelClick(e, "left"));
+    this.rightValidationPanel?.addEventListener("click", e => handlePanelClick(e, "right"));
+  }
+
+  updateStatusBadge(el, report, rawText) {
     if (!el) return;
-    if (!parseRes.ok && parseRes.error === "Input is empty") {
+    if (report.jsonDiag.isEmpty) {
       el.className = "status-tag tag-empty";
       el.textContent = "Empty";
-    } else if (parseRes.ok) {
-      el.className = "status-tag tag-valid";
-      el.textContent = `Valid JSON • ${parseRes.lineEnding === "\r\n" ? "CRLF (\\r\\n)" : "LF (\\n)"}`;
-    } else {
+      el.title = "No content provided";
+    } else if (!report.jsonValid) {
       el.className = "status-tag tag-error";
-      el.textContent = "Invalid JSON Syntax";
-      el.title = parseRes.error;
+      el.textContent = `✖ ${report.jsonDiag.errorTitle || "JSON Error"}`;
+      el.title = report.jsonDiag.message;
+    } else if (report.hasScriptErrors) {
+      el.className = "status-tag tag-warn";
+      el.textContent = "⚠ Valid JSON (JS Script Error)";
+      el.title = "JSON syntax is valid, but one or more embedded scripts in clientscripts contain JavaScript syntax errors";
+    } else {
+      const hasCrLf = rawText.includes("\r\n");
+      el.className = "status-tag tag-valid";
+      el.textContent = `✓ Valid JSON • ${hasCrLf ? "CRLF (\\r\\n)" : "LF (\\n)"}`;
+      el.title = "JSON bundle and all embedded scripts are 100% syntactically valid";
     }
   }
 
@@ -2415,6 +3599,8 @@ class InoJsonApp {
   bindQuickConverter() {
     const rawInput = document.getElementById("converterRawInput");
     const cleanInput = document.getElementById("converterCleanInput");
+    const convRawVal = document.getElementById("convRawVal");
+    const convCleanVal = document.getElementById("convCleanVal");
     const btnToReadable = document.getElementById("btnConvToReadable");
     const btnToEscaped = document.getElementById("btnConvToEscaped");
     const btnCopyRaw = document.getElementById("btnCopyConvRaw");
@@ -2422,10 +3608,32 @@ class InoJsonApp {
 
     if (!rawInput || !cleanInput) return;
 
+    // Real-time clean JS validation
+    const validateCleanInput = () => {
+      const code = cleanInput.value;
+      if (!convCleanVal) return;
+      if (!code.trim()) {
+        convCleanVal.textContent = "";
+        convCleanVal.className = "conv-val-indicator";
+        return;
+      }
+      const res = Validator.validateJs(code);
+      if (res.valid) {
+        convCleanVal.className = "conv-val-indicator valid";
+        convCleanVal.textContent = "✓ Valid JavaScript syntax (0 errors)";
+      } else {
+        convCleanVal.className = "conv-val-indicator error";
+        convCleanVal.textContent = `✖ Line ${res.line}, Col ${res.column}: ${res.errorTitle} — ${res.fixSuggestion}`;
+      }
+    };
+
+    cleanInput.addEventListener("input", validateCleanInput);
+
     btnToReadable?.addEventListener("click", () => {
       const raw = rawInput.value;
       const clean = JsonEngine.toReadableJs(raw);
       cleanInput.value = clean;
+      validateCleanInput();
       this.showToast("Converted to readable JavaScript!");
     });
 
@@ -2433,6 +3641,10 @@ class InoJsonApp {
       const clean = cleanInput.value;
       const escaped = JsonEngine.toRawEscapedString(clean, true);
       rawInput.value = escaped;
+      if (convRawVal) {
+        convRawVal.className = "conv-val-indicator valid";
+        convRawVal.textContent = "✓ Valid escaped JSON string (CRLF \\r\\n)";
+      }
       this.showToast("Converted to escaped JSON string format (\\r\\n)!");
     });
 
@@ -2447,6 +3659,16 @@ class InoJsonApp {
         this.showToast("Copied clean JS!");
       });
     });
+  }
+
+  escapeHtml(str) {
+    if (typeof str !== "string") return "";
+    return str
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
   }
 
   showToast(message) {

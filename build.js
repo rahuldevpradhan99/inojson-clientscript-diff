@@ -14,6 +14,7 @@ const files = [
   "js/sample-data.js",
   "js/js-highlighter.js",
   "js/js-beautifier.js",
+  "js/validator.js",
   "js/json-engine.js",
   "js/diff-engine.js",
   "js/diff-modal.js",

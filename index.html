@@ -110,6 +110,11 @@
             <div id="cmLeftMount" class="cm-panel-mount"></div>
           </div>
 
+          <!-- Base JSON Validation & Diagnostics Panel -->
+          <div class="validation-panel" id="leftValidationPanel">
+            <!-- Dynamically populated by Validator in app.js -->
+          </div>
+
           <!-- Base JSON Quick Export Actions -->
           <div class="panel-footer-actions">
             <span class="footer-tip">Receives merged lines from updated script</span>
@@ -154,6 +159,11 @@
           <div class="json-input-wrap">
             <textarea id="rightJsonInput" class="json-textarea hidden" spellcheck="false" placeholder="Paste Target / Modified JSON bundle here..."></textarea>
             <div id="cmRightMount" class="cm-panel-mount"></div>
+          </div>
+
+          <!-- Target JSON Validation & Diagnostics Panel -->
+          <div class="validation-panel" id="rightValidationPanel">
+            <!-- Dynamically populated by Validator in app.js -->
           </div>
 
           <!-- Target JSON Quick Export Actions -->
@@ -211,6 +221,7 @@
               <button class="btn-micro" id="btnCopyConvRaw">Copy</button>
             </div>
             <textarea id="converterRawInput" class="conv-textarea" placeholder='Paste "debugger;\r\nconsole.info(\"model\", model);\r\n..." here'></textarea>
+            <div class="conv-val-indicator" id="convRawVal"></div>
           </div>
 
           <div class="converter-middle">
@@ -230,11 +241,15 @@
               <button class="btn-micro" id="btnCopyConvClean">Copy</button>
             </div>
             <textarea id="converterCleanInput" class="conv-textarea" placeholder="Clean JavaScript appears here..."></textarea>
+            <div class="conv-val-indicator" id="convCleanVal"></div>
           </div>
         </div>
       </div>
     </main>
   </div>
+
+  <!-- JavaScript Syntax Parser (Acorn) -->
+  <script src="vendor/acorn/acorn.min.js"></script>
 
   <!-- CodeMirror Vendor Scripts -->
   <script src="vendor/codemirror/codemirror.min.js"></script>

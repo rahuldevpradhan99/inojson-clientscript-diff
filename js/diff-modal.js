@@ -8,6 +8,7 @@ import { DiffEngine } from "./diff-engine.js";
 import { JsHighlighter } from "./js-highlighter.js";
 import { JsBeautifier } from "./js-beautifier.js";
 import { JsonEngine } from "./json-engine.js";
+import { Validator } from "./validator.js";
 
 export class DiffModal {
   constructor(options = {}) {
@@ -27,6 +28,8 @@ export class DiffModal {
     this.modifiedRightScripts = new Map(); // scriptKey -> editedReadableText (New)
     this.mergeHistory = []; // Undo stack: [{ scriptKey, leftText, rightText }]
     this.cmModalInstance = null;
+    this.currentEditorDiag = null;
+    this.activeCmErrorLine = null;
 
     this.onApplyCallback = options.onApply || (() => {});
     this.onCloseCallback = options.onClose || (() => {});
@@ -484,6 +487,9 @@ export class DiffModal {
    * Side-by-Side Split View with Line-by-Line Merging Controls
    */
   renderSplitView(container, diff, leftText, rightText) {
+    const leftVal = Validator.validateJs(leftText);
+    const rightVal = Validator.validateJs(rightText);
+
     container.innerHTML = `
       <div class="split-diff-container">
         <!-- Left Pane: Old (Base) -->
@@ -492,6 +498,9 @@ export class DiffModal {
             <div class="pane-title-group">
               <span class="pane-title">Old / Base JSON Script</span>
               <span class="tag-role">Receiving Merged Lines</span>
+              <span class="val-pill ${leftVal.valid ? "pill-valid" : "pill-error"}" title="${leftVal.valid ? "Valid JavaScript syntax" : this.escapeHtml(leftVal.fixSuggestion || leftVal.message)}">
+                ${leftVal.valid ? "✓ Valid JS" : `✖ JS Error (L${leftVal.line})`}
+              </span>
             </div>
             <span class="pane-lines">${diff.stats.leftTotal} lines</span>
           </div>
@@ -569,6 +578,9 @@ export class DiffModal {
             <div class="pane-title-group">
               <span class="pane-title">New / Updated JSON Script</span>
               <span class="tag-role">Source of Changes</span>
+              <span class="val-pill ${rightVal.valid ? "pill-valid" : "pill-error"}" title="${rightVal.valid ? "Valid JavaScript syntax" : this.escapeHtml(rightVal.fixSuggestion || rightVal.message)}">
+                ${rightVal.valid ? "✓ Valid JS" : `✖ JS Error (L${rightVal.line})`}
+              </span>
             </div>
             <div class="pane-actions">
               <span class="pane-lines">${diff.stats.rightTotal} lines</span>
@@ -776,6 +788,9 @@ export class DiffModal {
                 Full JSON Bundle Editor
               </button>
             </div>
+            <div class="editor-val-badge val-ok" id="editorValBadge" title="Click to view syntax diagnostics">
+              ✓ Valid JavaScript
+            </div>
           </div>
           <div class="subnav-right">
             <span class="editor-cursor-pos" id="editorCursorPos">Ln 1, Col 1</span>
@@ -785,6 +800,9 @@ export class DiffModal {
             </button>
           </div>
         </div>
+
+        <!-- Real-time Diagnostics Drawer -->
+        <div class="editor-diagnostics-drawer hidden" id="editorDiagDrawer"></div>
 
         <!-- CodeMirror Mount Area -->
         <div class="codemirror-mount" id="modalCodeMirrorMount"></div>
@@ -827,20 +845,34 @@ export class DiffModal {
         if (posEl) posEl.textContent = `Ln ${pos.line + 1}, Col ${pos.ch + 1}`;
       });
 
-      // Live change sync
-      this.cmModalInstance.on("change", () => {
+      // Live change sync & validation
+      const runValidation = () => {
+        if (!this.cmModalInstance) return;
         const val = this.cmModalInstance.getValue();
         if (this.editorSubMode === "js") {
           this.modifiedRightScripts.set(this.activeScriptKey, val);
+          const diag = Validator.validateJs(val);
+          this.updateEditorDiagnostics(diag);
         } else {
           try {
             this.rightJsonObj = JSON.parse(val);
             this.rightBlocks = JsonEngine.findAllClientScripts(this.rightJsonObj);
           } catch (e) {}
+          const diag = Validator.validateJson(val);
+          this.updateEditorDiagnostics(diag);
         }
+      };
+
+      let debounceTimer = null;
+      this.cmModalInstance.on("change", () => {
+        clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(runValidation, 150);
       });
 
-      setTimeout(() => this.cmModalInstance.refresh(), 50);
+      setTimeout(() => {
+        this.cmModalInstance.refresh();
+        runValidation();
+      }, 60);
     } else {
       // Fallback textarea if CodeMirror script isn't loaded
       mountEl.innerHTML = `<textarea class="code-textarea" id="scriptTextarea" style="width:100%;height:100%;">${initialCode}</textarea>`;
@@ -850,8 +882,21 @@ export class DiffModal {
       });
     }
 
-    // Return to Diff actions
+    // Return to Diff actions with syntax check warning
     const returnToDiffHandler = () => {
+      if (this.currentEditorDiag && !this.currentEditorDiag.valid) {
+        const proceed = window.confirm(
+          `⚠️ JavaScript Syntax Warning:\n` +
+          `Your edited script contains a syntax error at Line ${this.currentEditorDiag.line || 1}, Col ${this.currentEditorDiag.column || 1}:\n` +
+          `"${this.currentEditorDiag.message}"\n\n` +
+          `Fix suggestion: ${this.currentEditorDiag.fixSuggestion || "Please fix syntax before committing."}\n\n` +
+          `Do you want to proceed back to Diff state anyway?`
+        );
+        if (!proceed) {
+          this.jumpToErrorInEditor(this.currentEditorDiag.line, this.currentEditorDiag.column);
+          return;
+        }
+      }
       this.switchViewMode("split");
       this.showToast("Returned to Diff & Merge state with your edits!");
     };
@@ -983,6 +1028,21 @@ export class DiffModal {
         this.modifiedRightScripts.get(scriptKey) ??
         (leftBlock?.scripts?.[scriptKey]?.readable || "");
 
+      // Pre-apply JavaScript syntax safety check
+      if (mergedCleanJs && mergedCleanJs.trim()) {
+        const diag = Validator.validateJs(mergedCleanJs);
+        if (!diag.valid) {
+          const proceed = window.confirm(
+            `⚠️ JavaScript Syntax Alert:\n` +
+            `Script '${scriptKey}' contains a syntax error at Line ${diag.line || 1}, Col ${diag.column || 1} (${diag.errorTitle || "Syntax Error"}):\n` +
+            `"${diag.message}"\n\n` +
+            `How to fix: ${diag.fixSuggestion || "Correct the syntax at the highlighted line."}\n\n` +
+            `Saving broken code may cause runtime failures in production. Do you want to apply anyway?`
+          );
+          if (!proceed) return;
+        }
+      }
+
       if (target === "old" || target === "both") {
         if (leftBlock) {
           const originalHadCrLf = leftBlock.scripts[scriptKey]?.hasCrLf ?? true;
@@ -1015,6 +1075,108 @@ export class DiffModal {
 
     const targetLabel = target === "both" ? "both Base & Target JSONs" : target === "old" ? "Base (Old) JSON" : "Target (New) JSON";
     this.showToast(`💾 Applied merged changes to ${targetLabel} ready for prod commit!`);
+  }
+
+  updateEditorDiagnostics(diag) {
+    this.currentEditorDiag = diag;
+    const badge = this.container.querySelector("#editorValBadge");
+    const drawer = this.container.querySelector("#editorDiagDrawer");
+
+    if (this.activeCmErrorLine !== null && this.cmModalInstance) {
+      this.cmModalInstance.removeLineClass(this.activeCmErrorLine, "background", "cm-val-error-line");
+      this.activeCmErrorLine = null;
+    }
+
+    if (!badge || !drawer) return;
+
+    if (diag.valid) {
+      badge.className = "editor-val-badge val-ok";
+      badge.innerHTML = `✓ Valid ${this.editorSubMode === "js" ? "JavaScript" : "JSON"} (0 errors)`;
+      drawer.classList.add("hidden");
+      drawer.innerHTML = "";
+    } else {
+      badge.className = "editor-val-badge val-err";
+      badge.innerHTML = `✖ Line ${diag.line || 1}, Col ${diag.column || 1}: ${this.escapeHtml(diag.errorTitle || "Syntax Error")}`;
+
+      const snippetHtml = diag.snippet
+        ? `
+        <div class="diag-drawer-snippet">
+          ${diag.snippet.lines
+            .map(
+              l => `
+            <div class="val-snippet-line ${l.isError ? "val-error-line" : ""}">
+              <span class="val-line-no">${l.lineNum}</span>
+              <span class="val-line-code">${this.escapeHtml(l.text)}</span>
+            </div>
+          `
+            )
+            .join("")}
+          <div class="val-pointer-line">
+            <span class="val-line-no"></span>
+            <span class="val-pointer">${this.escapeHtml(diag.snippet.pointer)}--- Error here</span>
+          </div>
+        </div>
+      `
+        : "";
+
+      drawer.innerHTML = `
+        <div class="diag-drawer-header">
+          <div class="diag-drawer-title">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+            <span>${this.escapeHtml(diag.errorTitle || "Syntax Error")} (Line ${diag.line || 1}, Column ${diag.column || 1})</span>
+          </div>
+          <div class="diag-drawer-actions">
+            <button class="btn-diag-jump" id="btnModalJumpError">
+              Jump to Line ${diag.line || 1}
+            </button>
+          </div>
+        </div>
+        <div class="diag-drawer-content">
+          ${snippetHtml}
+          <div class="diag-drawer-advice">
+            <div class="diag-advice-why">
+              <strong>Why:</strong> ${this.escapeHtml(diag.explanation || diag.message)}
+            </div>
+            <div class="diag-advice-fix">
+              <strong>How to fix:</strong> ${this.escapeHtml(diag.fixSuggestion || "Fix the syntax at the highlighted line.")}
+            </div>
+          </div>
+        </div>
+      `;
+
+      drawer.classList.remove("hidden");
+
+      // Highlight error line in CodeMirror
+      if (this.cmModalInstance && diag.line) {
+        this.activeCmErrorLine = diag.line - 1;
+        this.cmModalInstance.addLineClass(this.activeCmErrorLine, "background", "cm-val-error-line");
+      }
+
+      // Jump button in drawer & badge click
+      drawer.querySelector("#btnModalJumpError")?.addEventListener("click", () => {
+        this.jumpToErrorInEditor(diag.line, diag.column);
+      });
+      badge.onclick = () => {
+        this.jumpToErrorInEditor(diag.line, diag.column);
+      };
+    }
+  }
+
+  jumpToErrorInEditor(line = 1, col = 1) {
+    if (!this.cmModalInstance) return;
+    this.cmModalInstance.setCursor({ line: Math.max(0, line - 1), ch: Math.max(0, col - 1) });
+    this.cmModalInstance.scrollIntoView({ line: Math.max(0, line - 1), ch: Math.max(0, col - 1) }, 100);
+    this.cmModalInstance.focus();
+  }
+
+  escapeHtml(str) {
+    if (typeof str !== "string") return "";
+    return str
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
   }
 
   truncate(str = "", maxLen = 35) {

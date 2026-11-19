@@ -755,3 +755,349 @@ body.modal-open {
   transform: translateY(0);
   opacity: 1;
 }
+
+/* ==========================================================================
+   Validation & Diagnostics Panels
+   ========================================================================== */
+
+.validation-panel {
+  flex-shrink: 0;
+  border-top: 1px solid var(--border-color);
+  background-color: #10141d;
+  max-height: 230px;
+  overflow-y: auto;
+  font-size: 12px;
+  transition: all 0.2s ease;
+}
+
+/* Valid State: Clean Status Bar */
+.val-bar-valid {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 14px;
+  background: rgba(35, 134, 54, 0.08);
+  border-left: 3px solid #2ea043;
+}
+
+.val-bar-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.val-icon-success {
+  color: #3fb950;
+}
+
+.val-status-text {
+  font-weight: 600;
+  color: #e6edf3;
+  font-size: 12px;
+}
+
+.val-badge-clean {
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 10px;
+  background-color: rgba(63, 185, 80, 0.15);
+  color: #56d364;
+  font-weight: 500;
+}
+
+.val-bar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.val-script-status {
+  font-size: 11.5px;
+  color: #8b949e;
+}
+
+.val-script-status.has-script-errors {
+  color: #f0883e;
+  font-weight: 600;
+}
+
+/* Empty State */
+.val-bar-empty {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 14px;
+  background-color: transparent;
+  color: #6e7681;
+  font-size: 11.5px;
+}
+
+/* Error Card */
+.val-card-error {
+  padding: 10px 14px;
+  background: rgba(248, 81, 73, 0.07);
+  border-left: 3px solid #f85149;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.val-card-warn {
+  padding: 10px 14px;
+  background: rgba(210, 153, 34, 0.08);
+  border-left: 3px solid #d29922;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.val-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.val-header-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.val-icon-error {
+  color: #f85149;
+  flex-shrink: 0;
+}
+
+.val-icon-warn {
+  color: #d29922;
+  flex-shrink: 0;
+}
+
+.val-title {
+  font-weight: 600;
+  color: #f0f6fc;
+  font-size: 12.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.val-loc-pill {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 12px;
+  background-color: rgba(248, 81, 73, 0.2);
+  color: #ff7b72;
+  font-weight: 600;
+}
+
+.val-card-warn .val-loc-pill {
+  background-color: rgba(210, 153, 34, 0.2);
+  color: #e3b341;
+}
+
+.val-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Auto-Fix Button with pulse glow */
+.btn-val-autofix {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  font-size: 11.5px;
+  font-weight: 600;
+  background: linear-gradient(135deg, #238636 0%, #2ea043 100%);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  box-shadow: 0 0 10px rgba(46, 160, 67, 0.35);
+  transition: all 0.15s ease;
+  animation: valPulse 2.5s infinite;
+}
+
+@keyframes valPulse {
+  0% { box-shadow: 0 0 4px rgba(46, 160, 67, 0.3); }
+  50% { box-shadow: 0 0 12px rgba(46, 160, 67, 0.7); }
+  100% { box-shadow: 0 0 4px rgba(46, 160, 67, 0.3); }
+}
+
+.btn-val-autofix:hover {
+  background: #2ea043;
+  transform: translateY(-1px);
+}
+
+.btn-val-jump {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 9px;
+  font-size: 11.5px;
+  font-weight: 500;
+  background-color: #21262d;
+  color: #8b949e;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.btn-val-jump:hover {
+  background-color: #30363d;
+  color: #f0f6fc;
+}
+
+.btn-val-fix-diff {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  font-size: 11.5px;
+  font-weight: 600;
+  background-color: #d29922;
+  color: #0d1117;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.btn-val-fix-diff:hover {
+  background-color: #e3b341;
+}
+
+/* Snippet Box with Code & Pointer */
+.val-snippet-box {
+  background-color: #07090e;
+  border: 1px solid #252b35;
+  border-radius: 6px;
+  padding: 6px 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-x: auto;
+}
+
+.val-snippet-line {
+  display: flex;
+  align-items: center;
+  padding: 1px 10px;
+}
+
+.val-snippet-line.val-error-line {
+  background-color: rgba(248, 81, 73, 0.16);
+  border-left: 3px solid #f85149;
+  padding-left: 7px;
+}
+
+.val-line-no {
+  width: 32px;
+  flex-shrink: 0;
+  text-align: right;
+  padding-right: 10px;
+  color: #6e7681;
+  user-select: none;
+}
+
+.val-snippet-line.val-error-line .val-line-no {
+  color: #ff7b72;
+  font-weight: 700;
+}
+
+.val-line-code {
+  color: #c9d1d9;
+  white-space: pre;
+}
+
+.val-snippet-line.val-error-line .val-line-code {
+  color: #fff;
+  font-weight: 500;
+}
+
+.val-pointer-line {
+  display: flex;
+  padding: 0 10px;
+}
+
+.val-pointer {
+  color: #ff7b72;
+  font-weight: 700;
+  white-space: pre;
+}
+
+/* Diagnostic Reasons & Fix Instructions */
+.val-details {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+
+.val-reason, .val-fix {
+  display: flex;
+  gap: 6px;
+}
+
+.val-label {
+  font-weight: 700;
+  color: #8b949e;
+  flex-shrink: 0;
+}
+
+.val-reason .val-text {
+  color: #c9d1d9;
+}
+
+.val-fix .val-text {
+  color: #7ee787;
+  font-weight: 500;
+}
+
+.val-card-warn .val-fix .val-text {
+  color: #f2cc60;
+}
+
+/* CodeMirror Error Line Flashing */
+.cm-val-error-line {
+  background-color: rgba(248, 81, 73, 0.22) !important;
+  border-left: 3px solid #f85149 !important;
+}
+
+.cm-val-flash {
+  animation: cmFlash 1.5s ease-out;
+}
+
+@keyframes cmFlash {
+  0% { background-color: rgba(56, 139, 253, 0.5); }
+  50% { background-color: rgba(56, 139, 253, 0.2); }
+  100% { background-color: transparent; }
+}
+
+/* Quick Converter Validation Indicators */
+.conv-val-indicator {
+  margin-top: 6px;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 18px;
+}
+
+.conv-val-indicator.valid {
+  color: #3fb950;
+}
+
+.conv-val-indicator.error {
+  color: #ff7b72;
+}
+

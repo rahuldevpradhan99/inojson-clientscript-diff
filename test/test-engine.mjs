@@ -103,6 +103,88 @@ const unformatted = "function test(){if(true){console.log('hi');}}";
 const beautified = JsBeautifier.beautify(unformatted, 4);
 assert(beautified.includes("    if (true) {") || beautified.includes("    if(true){"), "Beautifier properly indented inner block");
 
+// 7. Comprehensive JSON & JavaScript Validator
+console.log("\n[7] Testing JSON & JavaScript Validator:");
+import fs from "fs";
+import { Validator } from "../js/validator.js";
+
+// Initialize Acorn in Node environment for tests
+const acornModule = {};
+new Function("exports", "module", fs.readFileSync("./vendor/acorn/acorn.min.js", "utf-8"))(acornModule, { exports: acornModule });
+globalThis.acorn = acornModule;
+
+// 7.1 Valid JSON
+const v1 = Validator.validateJson("{\n  \"status\": \"success\",\n  \"code\": 200\n}");
+assert(v1.valid === true, "Valid JSON returns valid: true");
+
+// 7.2 Trailing Comma in JSON
+const v2 = Validator.validateJson("{\n  \"item1\": 10,\n  \"item2\": 20,\n}");
+assert(v2.valid === false, "Trailing comma detected as invalid");
+assert(v2.errorTitle.includes("Trailing Comma"), `Identified as Trailing Comma (got: ${v2.errorTitle})`);
+assert(v2.line === 4, `Pinpointed error at line 4 (got: ${v2.line})`);
+assert(v2.canAutoFix === true, "Marked as auto-fixable");
+assert(v2.snippet !== null && v2.snippet.lines.length > 0, "Generated code snippet with line numbers");
+assert(v2.snippet.pointer.includes("^"), "Generated visual column pointer");
+assert(v2.fixSuggestion.includes("comma"), "Provided actionable fix suggestion");
+
+// 7.3 Single Quotes in JSON
+const v3 = Validator.validateJson("{\n  'title': 'Low-code Script'\n}");
+assert(v3.valid === false, "Single quotes detected as invalid");
+assert(v3.errorTitle.includes("Single Quotes"), `Identified single quotes issue (got: ${v3.errorTitle})`);
+assert(v3.canAutoFix === true, "Single quotes marked as auto-fixable");
+assert(v3.autoFixedText.includes('"title": "Low-code Script"'), "Auto-fixed single quotes to valid double quotes");
+
+// 7.4 Unquoted Key in JSON
+const v4 = Validator.validateJson("{\n  prescript: \"console.log(1);\"\n}");
+assert(v4.valid === false, "Unquoted key detected as invalid");
+assert(v4.errorTitle.includes("Unquoted"), `Identified unquoted key (got: ${v4.errorTitle})`);
+assert(v4.canAutoFix === true, "Unquoted key marked as auto-fixable");
+assert(v4.autoFixedText.includes('"prescript"'), "Auto-fixed unquoted key with double quotes");
+
+// 7.5 Comments in JSON
+const v5 = Validator.validateJson("{\n  // This is a comment\n  \"validKey\": true\n}");
+assert(v5.valid === false, "Comments detected as invalid");
+assert(v5.errorTitle.includes("Comments"), `Identified comments issue (got: ${v5.errorTitle})`);
+assert(v5.canAutoFix === true, "Comments marked as auto-fixable");
+assert(!v5.autoFixedText.includes("//"), "Auto-fixed text stripped illegal comments");
+
+// 7.6 Valid JavaScript with Top-level Return (Low-code standard)
+const js1 = Validator.validateJs("const flag = true;\nif (flag) {\n  return false;\n}\nreturn true;");
+assert(js1.valid === true, "Valid JavaScript with top-level return accepted");
+
+// 7.7 JavaScript Unclosed Bracket
+const js2 = Validator.validateJs("function confirmApproval() {\n  if (model.status === 'Approved') {\n    return true;\n}");
+assert(js2.valid === false, "Unclosed bracket detected as invalid");
+assert(js2.errorTitle.includes("Unclosed Bracket"), `Identified unclosed bracket (got: ${js2.errorTitle})`);
+assert(js2.line === 1 || js2.line === 2, `Pinpointed unclosed block line (got: ${js2.line})`);
+assert(js2.fixSuggestion.includes("}"), "Suggested adding missing '}' closing brace");
+
+// 7.8 JavaScript Unterminated String
+const js3 = Validator.validateJs("const message = \"Investigation complete;");
+assert(js3.valid === false, "Unterminated string detected as invalid");
+assert(js3.errorTitle.includes("String"), `Identified unterminated string (got: ${js3.errorTitle})`);
+assert(js3.line === 1, `Error at line 1 (got: ${js3.line})`);
+
+// 7.9 JavaScript Try Without Catch/Finally
+const js4 = Validator.validateJs("try {\n  confirmInvestigationCompletion();\n}");
+assert(js4.valid === false, "Try without catch/finally detected as invalid");
+assert(js4.errorTitle.includes("catch"), `Identified missing catch clause (got: ${js4.errorTitle})`);
+
+// 7.10 Bundle Validation with Embedded JavaScript
+const brokenBundle = JSON.stringify({
+  clientscripts: {
+    prescript: "function valid() { return true; }",
+    postscript: "function broken() {\n  const x = ; // syntax error\n}"
+  }
+}, null, 2);
+
+const bundleReport = Validator.validateBundle(brokenBundle, JsonEngine);
+assert(bundleReport.jsonValid === true, "Bundle JSON structure is syntactically valid");
+assert(bundleReport.hasScriptErrors === true, "Detected JavaScript syntax error inside embedded clientscript");
+assert(bundleReport.scriptErrors.length === 1, "Exactly 1 broken script identified");
+assert(bundleReport.scriptErrors[0].scriptKey === "postscript", "Correctly identified 'postscript' as containing the error");
+assert(bundleReport.scriptErrors[0].diagnostic.line === 2, "Pinpointed script error to line 2");
+
 console.log("\n====================================");
 console.log(`Results: ${passed} passed, ${failed} failed`);
 console.log("====================================");

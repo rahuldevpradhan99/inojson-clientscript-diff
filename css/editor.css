@@ -212,3 +212,152 @@
 .editor-hint strong {
   color: #79c0ff;
 }
+
+/* ==========================================================================
+   Modal Live Editor Real-time Diagnostics Bar & Drawer
+   ========================================================================== */
+
+.editor-val-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 12px;
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.editor-val-badge.val-ok {
+  background-color: rgba(46, 160, 67, 0.15);
+  color: #3fb950;
+  border: 1px solid rgba(46, 160, 67, 0.3);
+}
+
+.editor-val-badge.val-err {
+  background-color: rgba(248, 81, 73, 0.2);
+  color: #ff7b72;
+  border: 1px solid rgba(248, 81, 73, 0.4);
+  font-weight: 600;
+  animation: valBadgePulse 2s infinite;
+}
+
+@keyframes valBadgePulse {
+  0% { transform: scale(1); }
+  50% { transform: scale(1.03); }
+  100% { transform: scale(1); }
+}
+
+.editor-diagnostics-drawer {
+  background-color: #141822;
+  border-bottom: 2px solid #f85149;
+  padding: 10px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 180px;
+  overflow-y: auto;
+  font-size: 12px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+}
+
+.editor-diagnostics-drawer.hidden {
+  display: none;
+}
+
+.diag-drawer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.diag-drawer-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  color: #ff7b72;
+}
+
+.diag-drawer-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.btn-diag-jump {
+  padding: 3px 8px;
+  background-color: #21262d;
+  color: #f0f6fc;
+  border: 1px solid #30363d;
+  border-radius: 4px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.btn-diag-jump:hover {
+  background-color: #30363d;
+}
+
+.diag-drawer-content {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.diag-drawer-snippet {
+  flex: 1;
+  background-color: #0b0e14;
+  border: 1px solid #21262d;
+  border-radius: 5px;
+  padding: 6px 10px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-x: auto;
+}
+
+.diag-drawer-advice {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11.5px;
+}
+
+.diag-advice-why {
+  color: #c9d1d9;
+}
+
+.diag-advice-fix {
+  color: #7ee787;
+  font-weight: 500;
+}
+
+/* Diff View Scripts Validation Banner */
+.val-diff-status-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 16px;
+  background-color: #10141d;
+  border-bottom: 1px solid #21262d;
+  font-size: 11.5px;
+}
+
+.val-diff-status-col {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.val-diff-status-col.error {
+  color: #ff7b72;
+  font-weight: 600;
+}
+
+.val-diff-status-col.valid {
+  color: #3fb950;
+}
+
