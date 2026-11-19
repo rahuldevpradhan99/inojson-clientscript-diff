@@ -111,15 +111,15 @@
             <!-- Detected clientscripts chips -->
           </div>
 
-          <!-- JSON Input Mount (CodeMirror) -->
+          <!-- Base JSON Validation & Diagnostics Panel (Immediately visible at top of editor) -->
+          <div class="validation-panel" id="leftValidationPanel">
+            <!-- Dynamically populated by Validator in app.js -->
+          </div>
+
+          <!-- JSON Input Mount (CodeMirror / Monaco) -->
           <div class="json-input-wrap">
             <textarea id="leftJsonInput" class="json-textarea hidden" spellcheck="false" placeholder="Paste Base / Original JSON bundle here..."></textarea>
             <div id="cmLeftMount" class="cm-panel-mount"></div>
-          </div>
-
-          <!-- Base JSON Validation & Diagnostics Panel -->
-          <div class="validation-panel" id="leftValidationPanel">
-            <!-- Dynamically populated by Validator in app.js -->
           </div>
 
           <!-- Base JSON Quick Export Actions -->
@@ -162,15 +162,15 @@
             <!-- Detected clientscripts chips -->
           </div>
 
-          <!-- JSON Input Mount (CodeMirror) -->
+          <!-- Target JSON Validation & Diagnostics Panel (Immediately visible at top of editor) -->
+          <div class="validation-panel" id="rightValidationPanel">
+            <!-- Dynamically populated by Validator in app.js -->
+          </div>
+
+          <!-- JSON Input Mount (CodeMirror / Monaco) -->
           <div class="json-input-wrap">
             <textarea id="rightJsonInput" class="json-textarea hidden" spellcheck="false" placeholder="Paste Target / Modified JSON bundle here..."></textarea>
             <div id="cmRightMount" class="cm-panel-mount"></div>
-          </div>
-
-          <!-- Target JSON Validation & Diagnostics Panel -->
-          <div class="validation-panel" id="rightValidationPanel">
-            <!-- Dynamically populated by Validator in app.js -->
           </div>
 
           <!-- Target JSON Quick Export Actions -->
@@ -244,11 +244,20 @@
 
           <div class="converter-col">
             <div class="conv-col-header">
-              <span class="conv-label">Readable JavaScript (Clean Code)</span>
-              <button class="btn-micro" id="btnCopyConvClean">Copy</button>
+              <span class="conv-label">Readable JavaScript (Clean Code Editor)</span>
+              <div class="conv-header-actions">
+                <button class="btn-micro" id="btnFormatConvClean" title="Format JavaScript with clean 4-space indentation">Format JS</button>
+                <button class="btn-micro" id="btnCopyConvClean" title="Copy clean JS to clipboard">Copy</button>
+              </div>
             </div>
-            <textarea id="converterCleanInput" class="conv-textarea" placeholder="Clean JavaScript appears here..."></textarea>
-            <div class="conv-val-indicator" id="convCleanVal"></div>
+            <!-- Live JS Diagnostics Banner (Top of Editor) -->
+            <div class="conv-val-panel" id="convCleanValPanel">
+              <!-- Dynamically populated by Validator in app.js -->
+            </div>
+            <div class="conv-editor-wrap">
+              <textarea id="converterCleanInput" class="conv-textarea hidden" placeholder="Clean JavaScript appears here..."></textarea>
+              <div id="cmCleanJsMount" class="conv-cm-mount"></div>
+            </div>
           </div>
         </div>
       </div>

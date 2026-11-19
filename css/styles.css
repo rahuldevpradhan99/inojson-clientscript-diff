@@ -762,12 +762,14 @@ body.modal-open {
 
 .validation-panel {
   flex-shrink: 0;
-  border-top: 1px solid var(--border-color);
+  border-bottom: 1px solid var(--border-color);
   background-color: #10141d;
-  max-height: 230px;
+  max-height: 280px;
   overflow-y: auto;
   font-size: 12px;
   transition: all 0.2s ease;
+  position: relative;
+  z-index: 5;
 }
 
 /* Valid State: Clean Status Bar */
@@ -1082,22 +1084,73 @@ body.modal-open {
   100% { background-color: transparent; }
 }
 
-/* Quick Converter Validation Indicators */
-.conv-val-indicator {
-  margin-top: 6px;
-  font-size: 11px;
-  font-family: var(--font-mono);
+/* Quick Converter Editor & Validation Panels */
+.conv-header-actions {
   display: flex;
   align-items: center;
   gap: 6px;
-  min-height: 18px;
 }
 
-.conv-val-indicator.valid {
-  color: #3fb950;
+.conv-editor-wrap {
+  flex: 1;
+  position: relative;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
-.conv-val-indicator.error {
+.conv-cm-mount {
+  width: 100%;
+  height: 100%;
+  flex: 1;
+  position: relative;
+}
+
+.conv-cm-mount .CodeMirror {
+  height: 100%;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.55;
+  background-color: var(--bg-input);
+}
+
+.conv-cm-mount .CodeMirror-gutters {
+  background-color: #12171f;
+  border-right: 1px solid #21262d;
+  color: #484f58;
+}
+
+.conv-val-panel {
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border-color);
+  background-color: #10141d;
+  font-size: 12px;
+  max-height: 250px;
+  overflow-y: auto;
+}
+
+.cm-val-error-line {
+  background-color: rgba(248, 81, 73, 0.22) !important;
+}
+
+.cm-val-gutter-error {
   color: #ff7b72;
+  font-weight: bold;
+  padding-left: 2px;
+  font-size: 12px;
+}
+
+.cm-val-flash {
+  animation: valFlash 1.5s ease-out;
+}
+
+.status-tag.tag-status-pill {
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.status-tag.tag-status-pill:hover {
+  filter: brightness(1.2);
+  transform: translateY(-1px);
 }
 

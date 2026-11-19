@@ -228,6 +228,39 @@ assert(fallbackReport.valid === false, "Fallback detected JS syntax error");
 assert(fallbackReport.line === 100, `Fallback accurately identified line 100 without Acorn (got: ${fallbackReport.line})`);
 globalThis.acorn = savedAcorn;
 
+// 7.14 Specific Diagnostic Types for Tiny JSON Errors
+console.log("\n[7.14] Testing Specific Diagnostic Types for Tiny JSON Errors:");
+const testColon = Validator.validateJson("{\n  \"setting\" \"enabled\"\n}");
+assert(testColon.valid === false, "Missing colon detected");
+assert(testColon.errorTitle.includes("Colon"), `Identified missing colon (got: ${testColon.errorTitle})`);
+
+const testSemi = Validator.validateJson("{\n  \"key1\": \"value1\";\n  \"key2\": \"value2\"\n}");
+assert(testSemi.valid === false, "Semicolon instead of comma detected");
+assert(testSemi.errorTitle.includes("Semicolon"), `Identified semicolon error (got: ${testSemi.errorTitle})`);
+assert(testSemi.canAutoFix === true, "Semicolon marked as auto-fixable");
+
+const testLiteral = Validator.validateJson("{\n  \"data\": undefined\n}");
+assert(testLiteral.valid === false, "Undefined literal detected");
+assert(testLiteral.errorTitle.includes("Literal"), `Identified invalid literal (got: ${testLiteral.errorTitle})`);
+assert(testLiteral.canAutoFix === true, "Invalid literal marked as auto-fixable");
+
+const testDoubleComma = Validator.validateJson("{\n  \"item1\": 10,,\n  \"item2\": 20\n}");
+assert(testDoubleComma.valid === false, "Double comma detected");
+assert(testDoubleComma.canAutoFix === true, "Double comma marked as auto-fixable");
+
+// 7.15 Comprehensive Auto-Fix Verification
+console.log("\n[7.15] Testing Comprehensive JSON Auto-Fix Engine:");
+const messyJson = `{\n  key1: 'value1'; // inline comment\n  key2: undefined,\n  key3: 10,,\n  /* block comment */\n  key4: 20,\n}`;
+const fixRes = Validator.autoFixJson(messyJson);
+assert(fixRes.ok === true, "Successfully auto-fixed complex messy JSON");
+const reparsedFixed = JSON.parse(fixRes.fixedText);
+assert(reparsedFixed.key1 === "value1", "Auto-fixed unquoted key and single quotes");
+assert(reparsedFixed.key2 === null, "Auto-fixed undefined literal to null");
+assert(reparsedFixed.key3 === 10, "Auto-fixed double comma");
+assert(reparsedFixed.key4 === 20, "Auto-fixed trailing comma");
+assert(!fixRes.fixedText.includes("//"), "Stripped inline comments");
+assert(!fixRes.fixedText.includes("/*"), "Stripped block comments");
+
 console.log("\n====================================");
 console.log(`Results: ${passed} passed, ${failed} failed`);
 console.log("====================================");

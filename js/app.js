@@ -25,10 +25,19 @@ class InoJsonApp {
     this.compareSummaryEl = document.getElementById("compareSummary");
     this.btnOpenDiffModal = document.getElementById("btnOpenDiffModal");
 
+    // Quick Converter elements
+    this.cmCleanJsMount = document.getElementById("cmCleanJsMount");
+    this.convCleanValPanel = document.getElementById("convCleanValPanel");
+
     this.monacoLeft = null;
     this.monacoRight = null;
+    this.monacoCleanJs = null;
     this.cmLeft = null;
     this.cmRight = null;
+    this.cmCleanJs = null;
+    this.activeLeftErrorLine = null;
+    this.activeRightErrorLine = null;
+    this.activeCleanJsErrorLine = null;
     this.leftParsed = null;
     this.rightParsed = null;
     this.leftReport = null;
@@ -149,6 +158,22 @@ class InoJsonApp {
 
       this.cmLeft.on("change", onChange);
       this.cmRight.on("change", onChange);
+
+      // Dedicated JavaScript Code Editor for Quick Snippet Converter
+      if (this.cmCleanJsMount) {
+        this.cmCleanJs = CodeMirror(this.cmCleanJsMount, {
+          value: "",
+          mode: "javascript",
+          theme: "material-darker",
+          lineNumbers: true,
+          matchBrackets: true,
+          autoCloseBrackets: true,
+          styleActiveLine: true,
+          tabSize: 4,
+          indentUnit: 4,
+          lineWrapping: false
+        });
+      }
     } else {
       // Fallback: show raw textareas
       if (this.leftTextarea) this.leftTextarea.classList.remove("hidden");
@@ -276,6 +301,10 @@ class InoJsonApp {
             this.cmLeft.refresh();
             this.cmRight.refresh();
           }, 50);
+        } else if (targetView === "viewQuickConverter" && this.cmCleanJs) {
+          setTimeout(() => {
+            this.cmCleanJs.refresh();
+          }, 50);
         }
       });
     });
@@ -351,8 +380,8 @@ class InoJsonApp {
     this.renderValidationPanel("right", this.rightReport, rightText);
 
     // 3. Update top status tags
-    this.updateStatusBadge(this.leftStatusEl, this.leftReport, leftText);
-    this.updateStatusBadge(this.rightStatusEl, this.rightReport, rightText);
+    this.updateStatusBadge(this.leftStatusEl, this.leftReport, leftText, "left");
+    this.updateStatusBadge(this.rightStatusEl, this.rightReport, rightText, "right");
 
     this.leftParsed = this.leftReport.jsonValid ? this.leftReport.jsonDiag.data : null;
     this.rightParsed = this.rightReport.jsonValid ? this.rightReport.jsonDiag.data : null;
@@ -408,6 +437,26 @@ class InoJsonApp {
       }
     }
 
+    // Synchronize CodeMirror error line highlighting and gutter markers
+    const cm = side === "left" ? this.cmLeft : this.cmRight;
+    const activeKey = side === "left" ? "activeLeftErrorLine" : "activeRightErrorLine";
+    if (this[activeKey] !== null && cm) {
+      cm.removeLineClass(this[activeKey], "background", "cm-val-error-line");
+      cm.setGutterMarker(this[activeKey], "CodeMirror-linenumbers", null);
+      this[activeKey] = null;
+    }
+
+    if (!report.jsonValid && cm && report.jsonDiag && report.jsonDiag.line) {
+      const errLineIdx = Math.max(0, report.jsonDiag.line - 1);
+      this[activeKey] = errLineIdx;
+      cm.addLineClass(errLineIdx, "background", "cm-val-error-line");
+      const marker = document.createElement("span");
+      marker.className = "cm-val-gutter-error";
+      marker.textContent = "✖";
+      marker.title = `${report.jsonDiag.errorTitle}: ${report.jsonDiag.message}`;
+      cm.setGutterMarker(errLineIdx, "CodeMirror-linenumbers", marker);
+    }
+
     // Case 1: Empty input
     if (report.jsonDiag.isEmpty) {
       container.innerHTML = `
@@ -461,8 +510,7 @@ class InoJsonApp {
                   : ""
               }
               <button class="btn-val-jump" data-side="${side}" data-line="${diag.line || 1}" data-col="${diag.column || 1}" title="Focus and scroll to error line in editor">
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
-                Jump to Line
+                🎯 Jump to Line ${diag.line || 1}
               </button>
             </div>
           </div>
@@ -584,22 +632,7 @@ class InoJsonApp {
       if (btnJump) {
         const line = parseInt(btnJump.dataset.line, 10);
         const col = parseInt(btnJump.dataset.col, 10) || 1;
-        const monaco = side === "left" ? this.monacoLeft : this.monacoRight;
-        const cm = side === "left" ? this.cmLeft : this.cmRight;
-
-        if (monaco && !isNaN(line)) {
-          monaco.revealLineInCenter(line);
-          monaco.setPosition({ lineNumber: line, column: col });
-          monaco.focus();
-        } else if (cm && !isNaN(line)) {
-          cm.setCursor({ line: Math.max(0, line - 1), ch: Math.max(0, col - 1) });
-          cm.scrollIntoView({ line: Math.max(0, line - 1), ch: Math.max(0, col - 1) }, 100);
-          cm.focus();
-
-          // Visual flash
-          cm.addLineClass(line - 1, "background", "cm-val-flash");
-          setTimeout(() => cm.removeLineClass(line - 1, "background", "cm-val-flash"), 1500);
-        }
+        this.jumpToLine(side, line, col);
         return;
       }
 
@@ -614,28 +647,63 @@ class InoJsonApp {
 
     this.leftValidationPanel?.addEventListener("click", e => handlePanelClick(e, "left"));
     this.rightValidationPanel?.addEventListener("click", e => handlePanelClick(e, "right"));
+
+    // Click header status pill to jump to error
+    this.leftStatusEl?.addEventListener("click", () => {
+      if (this.leftReport && !this.leftReport.jsonValid) {
+        this.jumpToLine("left", this.leftReport.jsonDiag.line, this.leftReport.jsonDiag.column);
+      }
+    });
+    this.rightStatusEl?.addEventListener("click", () => {
+      if (this.rightReport && !this.rightReport.jsonValid) {
+        this.jumpToLine("right", this.rightReport.jsonDiag.line, this.rightReport.jsonDiag.column);
+      }
+    });
   }
 
-  updateStatusBadge(el, report, rawText) {
+  jumpToLine(side, line, col = 1) {
+    const monaco = side === "left" ? this.monacoLeft : this.monacoRight;
+    const cm = side === "left" ? this.cmLeft : this.cmRight;
+
+    if (monaco && !isNaN(line)) {
+      monaco.revealLineInCenter(line);
+      monaco.setPosition({ lineNumber: line, column: col });
+      monaco.focus();
+    } else if (cm && !isNaN(line)) {
+      cm.setCursor({ line: Math.max(0, line - 1), ch: Math.max(0, col - 1) });
+      cm.scrollIntoView({ line: Math.max(0, line - 1), ch: Math.max(0, col - 1) }, 100);
+      cm.focus();
+
+      // Visual flash
+      cm.addLineClass(line - 1, "background", "cm-val-flash");
+      setTimeout(() => cm.removeLineClass(line - 1, "background", "cm-val-flash"), 1500);
+    }
+  }
+
+  updateStatusBadge(el, report, rawText, side) {
     if (!el) return;
+    el.classList.add("tag-status-pill");
+    if (side) el.dataset.side = side;
+
     if (report.jsonDiag.isEmpty) {
-      el.className = "status-tag tag-empty";
-      el.textContent = "Empty";
+      el.className = "status-tag tag-status-pill tag-empty";
+      el.textContent = "Empty JSON";
       el.title = "No content provided";
     } else if (!report.jsonValid) {
-      el.className = "status-tag tag-error";
-      el.textContent = `✖ ${report.jsonDiag.errorTitle || "JSON Error"}`;
-      el.title = report.jsonDiag.message;
+      el.className = "status-tag tag-status-pill tag-error";
+      el.innerHTML = `✖ Line ${report.jsonDiag.line || 1}, Col ${report.jsonDiag.column || 1}: ${this.escapeHtml(report.jsonDiag.errorTitle || "JSON Error")}`;
+      el.title = `Click to jump to Line ${report.jsonDiag.line || 1}: ${report.jsonDiag.message}`;
     } else if (report.hasScriptErrors) {
-      el.className = "status-tag tag-warn";
-      el.textContent = "⚠ Valid JSON (JS Script Error)";
-      el.title = "JSON syntax is valid, but one or more embedded scripts in clientscripts contain JavaScript syntax errors";
+      const firstErr = report.scriptErrors[0];
+      el.className = "status-tag tag-status-pill tag-warn";
+      el.innerHTML = `⚠ JS Error in ${firstErr.scriptKey} (Line ${firstErr.diagnostic.line || 1})`;
+      el.title = "JSON syntax is valid, but embedded clientscript has JavaScript syntax errors. Click to inspect.";
     } else {
       const hasCrLf = rawText.includes("\r\n");
-      const engineLabel = this.monacoLeft ? "Monaco IDE" : "IDE";
-      el.className = "status-tag tag-valid";
-      el.textContent = `✓ Valid JSON • ${engineLabel} • ${hasCrLf ? "CRLF (\\r\\n)" : "LF (\\n)"}`;
-      el.title = "JSON bundle and all embedded scripts are 100% syntactically valid";
+      const lineCount = rawText ? rawText.split(/\r?\n/).length : 0;
+      el.className = "status-tag tag-status-pill tag-valid";
+      el.innerHTML = `✓ Valid JSON (${lineCount} lines • 0 errors)`;
+      el.title = `JSON bundle and all ${report.scriptsChecked} embedded scripts are 100% syntactically valid (${hasCrLf ? "CRLF" : "LF"})`;
     }
   }
 
@@ -765,52 +833,164 @@ class InoJsonApp {
   bindQuickConverter() {
     const rawInput = document.getElementById("converterRawInput");
     const cleanInput = document.getElementById("converterCleanInput");
-    const convRawVal = document.getElementById("convRawVal");
-    const convCleanVal = document.getElementById("convCleanVal");
     const btnToReadable = document.getElementById("btnConvToReadable");
     const btnToEscaped = document.getElementById("btnConvToEscaped");
     const btnCopyRaw = document.getElementById("btnCopyConvRaw");
     const btnCopyClean = document.getElementById("btnCopyConvClean");
+    const btnFormatClean = document.getElementById("btnFormatConvClean");
 
-    if (!rawInput || !cleanInput) return;
+    if (!rawInput) return;
 
-    // Real-time clean JS validation
-    const validateCleanInput = () => {
-      const code = cleanInput.value;
-      if (!convCleanVal) return;
+    // Real-time clean JS validation runner
+    const validateCleanJs = () => {
+      const code = this.cmCleanJs ? this.cmCleanJs.getValue() : cleanInput ? cleanInput.value : "";
+      if (!this.convCleanValPanel) return;
+
+      // Clear previous error line in cmCleanJs
+      if (this.activeCleanJsErrorLine !== null && this.cmCleanJs) {
+        this.cmCleanJs.removeLineClass(this.activeCleanJsErrorLine, "background", "cm-val-error-line");
+        this.cmCleanJs.setGutterMarker(this.activeCleanJsErrorLine, "CodeMirror-linenumbers", null);
+        this.activeCleanJsErrorLine = null;
+      }
+
       if (!code.trim()) {
-        convCleanVal.textContent = "";
-        convCleanVal.className = "conv-val-indicator";
+        this.convCleanValPanel.innerHTML = `
+          <div class="val-bar-empty">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+            <span>Type or paste clean JavaScript above to run real-time syntax diagnostics</span>
+          </div>
+        `;
         return;
       }
+
       const res = Validator.validateJs(code);
+      const lines = code.split(/\r?\n/);
+
       if (res.valid) {
-        convCleanVal.className = "conv-val-indicator valid";
-        convCleanVal.textContent = "✓ Valid JavaScript syntax (0 errors)";
+        this.convCleanValPanel.innerHTML = `
+          <div class="val-bar-valid">
+            <div class="val-bar-left">
+              <svg class="val-icon-success" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+              <span class="val-status-text">Valid JavaScript Syntax (${lines.length} lines)</span>
+              <span class="val-badge-clean">0 syntax errors</span>
+            </div>
+          </div>
+        `;
       } else {
-        convCleanVal.className = "conv-val-indicator error";
-        convCleanVal.textContent = `✖ Line ${res.line}, Col ${res.column}: ${res.errorTitle} — ${res.fixSuggestion}`;
+        const errLineIdx = Math.max(0, (res.line || 1) - 1);
+        if (this.cmCleanJs) {
+          this.activeCleanJsErrorLine = errLineIdx;
+          this.cmCleanJs.addLineClass(errLineIdx, "background", "cm-val-error-line");
+          const marker = document.createElement("span");
+          marker.className = "cm-val-gutter-error";
+          marker.textContent = "✖";
+          marker.title = `${res.errorTitle}: ${res.message}`;
+          this.cmCleanJs.setGutterMarker(errLineIdx, "CodeMirror-linenumbers", marker);
+        }
+
+        const snippetHtml = res.snippet
+          ? `
+            <div class="val-snippet-box">
+              ${res.snippet.lines
+                .map(
+                  l => `
+                <div class="val-snippet-line ${l.isError ? "val-error-line" : ""}">
+                  <span class="val-line-no">${l.lineNum}</span>
+                  <span class="val-line-code">${this.escapeHtml(l.text)}</span>
+                </div>
+              `
+                )
+                .join("")}
+              <div class="val-pointer-line">
+                <span class="val-line-no"></span>
+                <span class="val-pointer">${this.escapeHtml(res.snippet.pointer)}--- JS syntax error</span>
+              </div>
+            </div>
+          `
+          : "";
+
+        this.convCleanValPanel.innerHTML = `
+          <div class="val-card-error">
+            <div class="val-card-header">
+              <div class="val-header-left">
+                <svg class="val-icon-error" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+                <span class="val-title">${this.escapeHtml(res.errorTitle || "JavaScript Syntax Error")}</span>
+                <span class="val-loc-pill">Line ${res.line || 1}, Col ${res.column || 1}</span>
+              </div>
+              <div class="val-header-actions">
+                <button class="btn-val-jump" id="btnConvJumpLine" data-line="${res.line || 1}" data-col="${res.column || 1}" title="Focus error line in editor">
+                  🎯 Jump to Line ${res.line || 1}
+                </button>
+              </div>
+            </div>
+
+            ${snippetHtml}
+
+            <div class="val-details">
+              <div class="val-reason">
+                <span class="val-label">Problem:</span>
+                <span class="val-text">${this.escapeHtml(res.explanation || res.message)}</span>
+              </div>
+              <div class="val-fix">
+                <span class="val-label">How to fix:</span>
+                <span class="val-text">${this.escapeHtml(res.fixSuggestion || "Fix syntax error.")}</span>
+              </div>
+            </div>
+          </div>
+        `;
+
+        this.convCleanValPanel.querySelector("#btnConvJumpLine")?.addEventListener("click", () => {
+          if (this.cmCleanJs && res.line) {
+            this.cmCleanJs.setCursor({ line: res.line - 1, ch: (res.column || 1) - 1 });
+            this.cmCleanJs.scrollIntoView({ line: res.line - 1, ch: (res.column || 1) - 1 }, 100);
+            this.cmCleanJs.focus();
+            this.cmCleanJs.addLineClass(res.line - 1, "background", "cm-val-flash");
+            setTimeout(() => this.cmCleanJs?.removeLineClass(res.line - 1, "background", "cm-val-flash"), 1500);
+          }
+        });
       }
     };
 
-    cleanInput.addEventListener("input", validateCleanInput);
+    let debounceTimer = null;
+    const triggerValidation = () => {
+      clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => validateCleanJs(), 200);
+    };
+
+    if (this.cmCleanJs) {
+      this.cmCleanJs.on("change", triggerValidation);
+    }
+    cleanInput?.addEventListener("input", triggerValidation);
+
+    // Format JS button
+    btnFormatClean?.addEventListener("click", () => {
+      const code = this.cmCleanJs ? this.cmCleanJs.getValue() : cleanInput.value;
+      if (!code.trim()) return;
+      const formatted = JsBeautifier.beautify(code, 4);
+      if (this.cmCleanJs) {
+        this.cmCleanJs.setValue(formatted);
+      }
+      if (cleanInput) cleanInput.value = formatted;
+      validateCleanJs();
+      this.showToast("⚡ Formatted JavaScript with clean 4-space indentation!");
+    });
 
     btnToReadable?.addEventListener("click", () => {
       const raw = rawInput.value;
       const clean = JsonEngine.toReadableJs(raw);
-      cleanInput.value = clean;
-      validateCleanInput();
-      this.showToast("Converted to readable JavaScript!");
+      const beautified = JsBeautifier.beautify(clean, 4);
+      if (this.cmCleanJs) {
+        this.cmCleanJs.setValue(beautified);
+      }
+      if (cleanInput) cleanInput.value = beautified;
+      validateCleanJs();
+      this.showToast("Converted to readable JavaScript in Editor!");
     });
 
     btnToEscaped?.addEventListener("click", () => {
-      const clean = cleanInput.value;
+      const clean = this.cmCleanJs ? this.cmCleanJs.getValue() : cleanInput.value;
       const escaped = JsonEngine.toRawEscapedString(clean, true);
       rawInput.value = escaped;
-      if (convRawVal) {
-        convRawVal.className = "conv-val-indicator valid";
-        convRawVal.textContent = "✓ Valid escaped JSON string (CRLF \\r\\n)";
-      }
       this.showToast("Converted to escaped JSON string format (\\r\\n)!");
     });
 
@@ -821,10 +1001,14 @@ class InoJsonApp {
     });
 
     btnCopyClean?.addEventListener("click", () => {
-      navigator.clipboard.writeText(cleanInput.value).then(() => {
+      const code = this.cmCleanJs ? this.cmCleanJs.getValue() : cleanInput.value;
+      navigator.clipboard.writeText(code).then(() => {
         this.showToast("Copied clean JS!");
       });
     });
+
+    // Initial validation
+    setTimeout(() => validateCleanJs(), 100);
   }
 
   escapeHtml(str) {

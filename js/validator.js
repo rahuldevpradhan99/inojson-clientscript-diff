@@ -429,7 +429,14 @@ export const Validator = {
       explanation = `In JSON, all object property keys must be surrounded by double quotes, e.g. "${keyName}": value. Unquoted keys are allowed in JavaScript object literals, but strictly invalid in JSON.`;
       fixSuggestion = `Wrap the key '${keyName}' in double quotes: "${keyName}": ..., or click '⚡ Auto-Fix JSON'.`;
     }
-    // Pattern F: Missing comma between properties
+    // Pattern F: Semicolon used instead of comma
+    else if (currentLineText.includes(";") || prevLineText.includes(";")) {
+      errorTitle = "Semicolon Used Instead of Comma";
+      message = "Semicolon (';') found at end of property instead of comma (',')";
+      explanation = "In JSON, properties are separated by commas (','). Semicolons are standard in JavaScript statements, but strictly forbidden in JSON.";
+      fixSuggestion = `Replace the semicolon ';' with a comma ',' on line ${line}, or click '⚡ Auto-Fix JSON'.`;
+    }
+    // Pattern G: Missing comma between properties
     else if (
       rawMessage.toLowerCase().includes("expected ','") ||
       (prevLineText.trim().length > 0 &&
@@ -443,7 +450,41 @@ export const Validator = {
       explanation = `Expected a comma ',' separating properties or array elements. In JSON, every entry (except the last one in a block) must end with a comma.`;
       fixSuggestion = `Add a comma ',' at the end of line ${line > 1 ? line - 1 : line}.`;
     }
-    // Pattern G: Unescaped raw newline in string literal
+    // Pattern H: Missing colon separator ':'
+    else if (
+      rawMessage.toLowerCase().includes("expected ':'") ||
+      (currentLineText.trim().startsWith('"') && /"[^"\\]*"\s+[^:,}\]]/.test(currentLineText))
+    ) {
+      errorTitle = "Missing Colon Separator ':'";
+      message = "Missing colon ':' after object property name";
+      explanation = "In JSON, every property name must be separated from its value by a colon (':'), e.g. \"key\": \"value\".";
+      fixSuggestion = `Insert a colon ':' after the property name on line ${line}.`;
+    }
+    // Pattern I: Double comma or unexpected comma
+    else if (
+      /,\s*,/.test(currentLineText) ||
+      /{\s*,/.test(currentLineText) ||
+      /\[\s*,/.test(currentLineText)
+    ) {
+      errorTitle = "Double Comma / Extra Comma";
+      message = "Found consecutive commas (',,') or unexpected leading comma";
+      explanation = "JSON does not allow empty elements between consecutive commas or commas immediately following an opening brace '{' or bracket '['.";
+      fixSuggestion = `Remove the duplicate or misplaced comma on line ${line}, or click '⚡ Auto-Fix JSON'.`;
+    }
+    // Pattern J: Invalid literals (undefined, NaN, Python None/True/False)
+    else if (
+      /:\s*(undefined|NaN|None|True|False)\b/i.test(currentLineText) ||
+      rawMessage.toLowerCase().includes("unexpected token 'u'") ||
+      rawMessage.toLowerCase().includes("unexpected token 'n'")
+    ) {
+      const litMatch = currentLineText.match(/:\s*([a-zA-Z_$][a-zA-Z0-9_$]*)/);
+      const litName = litMatch ? litMatch[1] : "literal";
+      errorTitle = `Invalid Literal '${litName}' in JSON`;
+      message = `'${litName}' is not a valid JSON literal`;
+      explanation = `Standard JSON (RFC 8259) only accepts 'null', 'true', 'false', numbers, strings, arrays, and objects. Values like 'undefined', 'NaN', and Python-style 'None' are invalid.`;
+      fixSuggestion = `Replace '${litName}' with null (or \"${litName}\" string) on line ${line}, or click '⚡ Auto-Fix JSON'.`;
+    }
+    // Pattern K: Unescaped raw newline in string literal
     else if (rawMessage.toLowerCase().includes("bad control character") || rawMessage.toLowerCase().includes("unterminated string")) {
       errorTitle = "Unescaped Newline in String Literal";
       message = "String literal contains raw unescaped line breaks";
@@ -525,9 +566,51 @@ export const Validator = {
       text = noLine;
     }
 
-    // 2. Fix unquoted keys: e.g. { foo: or , foo:
+    // 2. Replace semicolons at line ends or before next element with commas
+    let fixedSemicolons = false;
+    const semiFixed = text.replace(/;\s*(?=[\r\n]|\s*["'a-zA-Z0-9_$\}\]])/g, () => {
+      fixedSemicolons = true;
+      return ",";
+    });
+    if (fixedSemicolons) {
+      appliedFixes.push("Replaced semicolons (;) with commas (,)");
+      text = semiFixed;
+    }
+
+    // 3. Fix consecutive duplicate commas: ,, -> ,
+    let fixedDoubleCommas = false;
+    const doubleCommaFixed = text.replace(/,\s*,+/g, () => {
+      fixedDoubleCommas = true;
+      return ",";
+    });
+    if (fixedDoubleCommas) {
+      appliedFixes.push("Removed duplicate consecutive commas (,,)");
+      text = doubleCommaFixed;
+    }
+
+    // 4. Fix invalid literals: undefined, NaN, None -> null; True -> true; False -> false
+    let fixedLiterals = false;
+    const litFixed = text
+      .replace(/:\s*(undefined|NaN|None)\b/g, () => {
+        fixedLiterals = true;
+        return ": null";
+      })
+      .replace(/:\s*True\b/g, () => {
+        fixedLiterals = true;
+        return ": true";
+      })
+      .replace(/:\s*False\b/g, () => {
+        fixedLiterals = true;
+        return ": false";
+      });
+    if (fixedLiterals) {
+      appliedFixes.push("Converted invalid literals (undefined/None/True/False) to valid JSON");
+      text = litFixed;
+    }
+
+    // 5. Fix unquoted keys: e.g. { foo: or , foo: or newline foo:
     let fixedKeys = false;
-    const keyFixed = text.replace(/([{,]\s*)([a-zA-Z_$][a-zA-Z0-9_$]*)\s*:/g, (match, prefix, key) => {
+    const keyFixed = text.replace(/(^|[{,\r\n]\s*)([a-zA-Z_$][a-zA-Z0-9_$]*)\s*:/g, (match, prefix, key) => {
       fixedKeys = true;
       return `${prefix}"${key}":`;
     });
@@ -536,7 +619,7 @@ export const Validator = {
       text = keyFixed;
     }
 
-    // 3. Fix single quotes to double quotes (for simple strings)
+    // 6. Fix single quotes to double quotes (for simple strings)
     let fixedQuotes = false;
     const quotesFixed = text.replace(/'([^'\\]*(?:\\.[^'\\]*)*)'/g, (match, inner) => {
       fixedQuotes = true;
@@ -549,7 +632,7 @@ export const Validator = {
       text = quotesFixed;
     }
 
-    // 4. Remove trailing commas before } or ]
+    // 7. Remove trailing commas before } or ]
     let fixedCommas = false;
     const commaFixed = text.replace(/,\s*([\}\]])/g, (match, closing) => {
       fixedCommas = true;
@@ -560,7 +643,7 @@ export const Validator = {
       text = commaFixed;
     }
 
-    // 5. Test if the result parses
+    // 8. Test if the result parses
     try {
       const parsed = JSON.parse(text);
       // Re-format cleanly
