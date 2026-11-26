@@ -2,6 +2,75 @@
  * CodeMirror Overrides & IDE Editor Styles
  */
 
+/* Smaller toolbar action buttons (fold/unfold/search) */
+.btn-action-sm {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  font-size: 11px;
+  font-weight: 500;
+  background-color: #1c2229;
+  color: #8b949e;
+  border: 1px solid #30363d;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: all 0.14s ease;
+  white-space: nowrap;
+}
+.btn-action-sm:hover {
+  background-color: #21262d;
+  color: #c9d1d9;
+  border-color: #58a6ff;
+}
+.btn-action-sm svg {
+  flex-shrink: 0;
+}
+
+/* CodeMirror fold gutter column */
+.CodeMirror-foldgutter {
+  width: 1.4em;
+}
+.CodeMirror-foldgutter-open,
+.CodeMirror-foldgutter-folded {
+  color: #484f58;
+  cursor: pointer;
+  padding-right: 2px;
+}
+.CodeMirror-foldgutter-open::after {
+  content: "▾";
+}
+.CodeMirror-foldgutter-folded::after {
+  content: "▸";
+  color: #58a6ff;
+}
+
+/* CodeMirror search dialog overlay */
+.CodeMirror-dialog {
+  background-color: #161b22 !important;
+  border-bottom: 1px solid #30363d !important;
+  color: #c9d1d9 !important;
+  font-family: var(--font-mono, monospace) !important;
+  font-size: 12px !important;
+  padding: 4px 8px !important;
+  z-index: 10 !important;
+}
+.CodeMirror-dialog input {
+  background: #0d1117 !important;
+  border: 1px solid #30363d !important;
+  border-radius: 4px !important;
+  color: #c9d1d9 !important;
+  font-size: 12px !important;
+  padding: 2px 6px !important;
+  outline: none !important;
+}
+.CodeMirror-dialog input:focus {
+  border-color: #58a6ff !important;
+}
+.CodeMirror-search-hint {
+  color: #8b949e !important;
+}
+
 /* Main Screen CodeMirror & Monaco Panels */
 .cm-panel-mount,
 .monaco-mount {

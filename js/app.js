@@ -48,14 +48,11 @@ class InoJsonApp {
     this.diffModal = new DiffModal({
       monacoManager,
       onApply: ({ baseObj, targetObj }) => {
-        if (baseObj && this.leftParsed) {
+        if (baseObj) {
           const str = JSON.stringify(baseObj, null, 2);
           this.setLeftJson(str);
         }
-        if (targetObj && this.rightParsed) {
-          const str = JSON.stringify(targetObj, null, 2);
-          this.setRightJson(str);
-        } else if (targetObj && !this.leftParsed) {
+        if (targetObj) {
           const str = JSON.stringify(targetObj, null, 2);
           this.setRightJson(str);
         }
@@ -123,7 +120,7 @@ class InoJsonApp {
 
   initCodeMirrorPanels() {
     if (typeof CodeMirror !== "undefined" && this.cmLeftMount && this.cmRightMount) {
-      this.cmLeft = CodeMirror(this.cmLeftMount, {
+      const cmJsonOpts = {
         value: "",
         mode: { name: "javascript", json: true },
         theme: "material-darker",
@@ -133,21 +130,19 @@ class InoJsonApp {
         styleActiveLine: true,
         tabSize: 2,
         indentUnit: 2,
-        lineWrapping: false
-      });
+        lineWrapping: false,
+        // Fold support
+        foldGutter: true,
+        gutters: ["CodeMirror-linenumbers", "CodeMirror-foldgutter"],
+        extraKeys: {
+          "Ctrl-Q": cm => cm.foldCode(cm.getCursor()),
+          "Ctrl-F": "findPersistent",
+          "Ctrl-G": "jumpToLine"
+        }
+      };
 
-      this.cmRight = CodeMirror(this.cmRightMount, {
-        value: "",
-        mode: { name: "javascript", json: true },
-        theme: "material-darker",
-        lineNumbers: true,
-        matchBrackets: true,
-        autoCloseBrackets: true,
-        styleActiveLine: true,
-        tabSize: 2,
-        indentUnit: 2,
-        lineWrapping: false
-      });
+      this.cmLeft = CodeMirror(this.cmLeftMount, { ...cmJsonOpts });
+      this.cmRight = CodeMirror(this.cmRightMount, { ...cmJsonOpts });
 
       let debounceTimer = null;
       const onChange = () => {
@@ -162,6 +157,28 @@ class InoJsonApp {
       this.cmLeft.on("change", onChange);
       this.cmRight.on("change", onChange);
 
+      // Instant validation on paste (fires after content is inserted)
+      this.cmLeft.on("inputRead", (cm, change) => {
+        if (change.origin === "paste") {
+          clearTimeout(debounceTimer);
+          debounceTimer = setTimeout(() => {
+            this.leftTextarea.value = this.cmLeft.getValue();
+            this.rightTextarea.value = this.cmRight.getValue();
+            this.analyzeInputs();
+          }, 50);
+        }
+      });
+      this.cmRight.on("inputRead", (cm, change) => {
+        if (change.origin === "paste") {
+          clearTimeout(debounceTimer);
+          debounceTimer = setTimeout(() => {
+            this.leftTextarea.value = this.cmLeft.getValue();
+            this.rightTextarea.value = this.cmRight.getValue();
+            this.analyzeInputs();
+          }, 50);
+        }
+      });
+
       // Dedicated JavaScript Code Editor for Quick Snippet Converter
       if (this.cmCleanJsMount) {
         this.cmCleanJs = CodeMirror(this.cmCleanJsMount, {
@@ -174,7 +191,14 @@ class InoJsonApp {
           styleActiveLine: true,
           tabSize: 4,
           indentUnit: 4,
-          lineWrapping: false
+          lineWrapping: false,
+          foldGutter: true,
+          gutters: ["CodeMirror-linenumbers", "CodeMirror-foldgutter"],
+          extraKeys: {
+            "Ctrl-Q": cm => cm.foldCode(cm.getCursor()),
+            "Ctrl-F": "findPersistent",
+            "Ctrl-G": "jumpToLine"
+          }
         });
       }
     } else {
@@ -286,6 +310,70 @@ class InoJsonApp {
         this.lineEndingPreference = e.target.value;
       });
     }
+
+    // ── Fold All / Unfold All / Search buttons ──────────────────────────
+    const bindEditorToolbar = (foldId, unfoldId, searchId, getMonaco, getCm) => {
+      document.getElementById(foldId)?.addEventListener("click", () => {
+        const m = getMonaco();
+        const cm = getCm();
+        if (m) {
+          m.trigger("fold", "editor.foldAll", null);
+        } else if (cm && cm.execCommand) {
+          // CodeMirror foldAll command (requires foldcode + brace-fold addon)
+          if (CodeMirror.commands.foldAll) {
+            cm.execCommand("foldAll");
+          } else {
+            // Manual fallback: fold every line that has a fold region
+            for (let i = 0; i < cm.lineCount(); i++) {
+              cm.foldCode({ line: i, ch: 0 });
+            }
+          }
+        }
+      });
+      document.getElementById(unfoldId)?.addEventListener("click", () => {
+        const m = getMonaco();
+        const cm = getCm();
+        if (m) {
+          m.trigger("unfold", "editor.unfoldAll", null);
+        } else if (cm && cm.execCommand) {
+          if (CodeMirror.commands.unfoldAll) {
+            cm.execCommand("unfoldAll");
+          } else {
+            // Manual fallback: unfold every line
+            for (let i = 0; i < cm.lineCount(); i++) {
+              const mark = cm.findMarksAt({ line: i, ch: 0 }).find(m => m.__isFold);
+              if (mark) mark.clear();
+            }
+            cm.operation(() => {
+              cm.getAllMarks().filter(m => m.__isFold).forEach(m => m.clear());
+            });
+          }
+        }
+      });
+      document.getElementById(searchId)?.addEventListener("click", () => {
+        const m = getMonaco();
+        const cm = getCm();
+        if (m) {
+          m.trigger("find", "actions.find", null);
+        } else if (cm) {
+          if (CodeMirror.commands.findPersistent) {
+            CodeMirror.commands.findPersistent(cm);
+          } else if (CodeMirror.commands.find) {
+            CodeMirror.commands.find(cm);
+          }
+          cm.focus();
+        }
+      });
+    };
+
+    bindEditorToolbar(
+      "btnFoldAllLeft", "btnUnfoldAllLeft", "btnSearchLeft",
+      () => this.monacoLeft, () => this.cmLeft
+    );
+    bindEditorToolbar(
+      "btnFoldAllRight", "btnUnfoldAllRight", "btnSearchRight",
+      () => this.monacoRight, () => this.cmRight
+    );
 
     // App Navigation tabs
     const navTabs = document.querySelectorAll(".nav-tab");
@@ -1111,6 +1199,13 @@ class InoJsonApp {
 
     if (this.cmCleanJs) {
       this.cmCleanJs.on("change", triggerValidation);
+      // Instant validation on paste
+      this.cmCleanJs.on("inputRead", (cm, change) => {
+        if (change.origin === "paste") {
+          clearTimeout(debounceTimer);
+          debounceTimer = setTimeout(() => validateCleanJs(), 50);
+        }
+      });
     }
     cleanInput?.addEventListener("input", triggerValidation);
 

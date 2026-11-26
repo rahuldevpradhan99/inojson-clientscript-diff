@@ -9,6 +9,8 @@
   <!-- CodeMirror Editor Assets -->
   <link rel="stylesheet" href="vendor/codemirror/codemirror.min.css">
   <link rel="stylesheet" href="vendor/codemirror/material-darker.min.css">
+  <link rel="stylesheet" href="vendor/codemirror/foldgutter.min.css">
+  <link rel="stylesheet" href="vendor/codemirror/dialog.min.css">
   
   <!-- Core UI & Diff Stylesheets -->
   <link rel="stylesheet" href="css/styles.css">
@@ -126,6 +128,18 @@
           <div class="panel-footer-actions">
             <span class="footer-tip">Receives merged lines from updated script</span>
             <div class="btn-group">
+              <button class="btn-action btn-action-sm" id="btnFoldAllLeft" title="Fold all code blocks">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 14 10 8 16 14"/><line x1="4" y1="19" x2="20" y2="19"/></svg>
+                Fold All
+              </button>
+              <button class="btn-action btn-action-sm" id="btnUnfoldAllLeft" title="Unfold all code blocks">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 10 10 16 16 10"/><line x1="4" y1="5" x2="20" y2="5"/></svg>
+                Unfold All
+              </button>
+              <button class="btn-action btn-action-sm" id="btnSearchLeft" title="Find in editor (Ctrl+F)">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                Search
+              </button>
               <button class="btn-action" id="btnCopyLeftJson" title="Copy merged Base JSON to clipboard">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
                 Copy Base JSON
@@ -177,6 +191,18 @@
           <div class="panel-footer-actions">
             <span class="footer-tip">Ready for Prod commit when changes are applied</span>
             <div class="btn-group">
+              <button class="btn-action btn-action-sm" id="btnFoldAllRight" title="Fold all code blocks">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 14 10 8 16 14"/><line x1="4" y1="19" x2="20" y2="19"/></svg>
+                Fold All
+              </button>
+              <button class="btn-action btn-action-sm" id="btnUnfoldAllRight" title="Unfold all code blocks">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 10 10 16 16 10"/><line x1="4" y1="5" x2="20" y2="5"/></svg>
+                Unfold All
+              </button>
+              <button class="btn-action btn-action-sm" id="btnSearchRight" title="Find in editor (Ctrl+F)">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                Search
+              </button>
               <button class="btn-action" id="btnCopyRightJson" title="Copy entire production-ready JSON to clipboard">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
                 Copy Target JSON
@@ -270,6 +296,15 @@
   <script src="vendor/codemirror/matchbrackets.min.js"></script>
   <script src="vendor/codemirror/closebrackets.min.js"></script>
   <script src="vendor/codemirror/active-line.min.js"></script>
+  <!-- Fold addons -->
+  <script src="vendor/codemirror/foldcode.min.js"></script>
+  <script src="vendor/codemirror/foldgutter.min.js"></script>
+  <script src="vendor/codemirror/brace-fold.min.js"></script>
+  <!-- Search addons (dialog required for search UI) -->
+  <script src="vendor/codemirror/searchcursor.min.js"></script>
+  <script src="vendor/codemirror/dialog.min.js"></script>
+  <script src="vendor/codemirror/search.min.js"></script>
+  <script src="vendor/codemirror/jump-to-line.min.js"></script>
 
   <!-- Main application script -->
   <script src="js/bundle.js"></script>
