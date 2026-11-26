@@ -48,11 +48,14 @@ class InoJsonApp {
     this.diffModal = new DiffModal({
       monacoManager,
       onApply: ({ baseObj, targetObj }) => {
-        if (baseObj) {
+        if (baseObj && this.leftParsed) {
           const str = JSON.stringify(baseObj, null, 2);
           this.setLeftJson(str);
         }
-        if (targetObj) {
+        if (targetObj && this.rightParsed) {
+          const str = JSON.stringify(targetObj, null, 2);
+          this.setRightJson(str);
+        } else if (targetObj && !this.leftParsed) {
           const str = JSON.stringify(targetObj, null, 2);
           this.setRightJson(str);
         }
@@ -72,8 +75,8 @@ class InoJsonApp {
     this.bindValidationActions();
     this.bindQuickConverter();
 
-    // Load initial realistic sample data
-    this.loadSampleData();
+    // Start with clean inputs — analyze initial state without injecting sample data
+    this.analyzeInputs();
   }
 
   initMonacoPanels() {
@@ -475,15 +478,15 @@ class InoJsonApp {
         ? `
           <div class="val-snippet-box">
             ${diag.snippet.lines
-              .map(
-                l => `
+          .map(
+            l => `
               <div class="val-snippet-line ${l.isError ? "val-error-line" : ""}">
                 <span class="val-line-no">${l.lineNum}</span>
                 <span class="val-line-code">${this.escapeHtml(l.text)}</span>
               </div>
             `
-              )
-              .join("")}
+          )
+          .join("")}
             <div class="val-pointer-line">
               <span class="val-line-no"></span>
               <span class="val-pointer">${this.escapeHtml(diag.snippet.pointer)}--- Error detected here</span>
@@ -501,14 +504,13 @@ class InoJsonApp {
               <span class="val-loc-pill">Line ${diag.line || 1}, Col ${diag.column || 1}</span>
             </div>
             <div class="val-header-actions">
-              ${
-                diag.canAutoFix
-                  ? `<button class="btn-val-autofix" data-side="${side}" title="Automatically fix trailing commas, unquoted keys, single quotes, or comments">
+              ${diag.canAutoFix
+          ? `<button class="btn-val-autofix" data-side="${side}" title="Automatically fix trailing commas, unquoted keys, single quotes, or comments">
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
                       ⚡ Auto-Fix JSON
                     </button>`
-                  : ""
-              }
+          : ""
+        }
               <button class="btn-val-jump" data-side="${side}" data-line="${diag.line || 1}" data-col="${diag.column || 1}" title="Focus and scroll to error line in editor">
                 🎯 Jump to Line ${diag.line || 1}
               </button>
@@ -540,15 +542,15 @@ class InoJsonApp {
         ? `
           <div class="val-snippet-box">
             ${jsDiag.snippet.lines
-              .map(
-                l => `
+          .map(
+            l => `
               <div class="val-snippet-line ${l.isError ? "val-error-line" : ""}">
                 <span class="val-line-no">${l.lineNum}</span>
                 <span class="val-line-code">${this.escapeHtml(l.text)}</span>
               </div>
             `
-              )
-              .join("")}
+          )
+          .join("")}
             <div class="val-pointer-line">
               <span class="val-line-no"></span>
               <span class="val-pointer">${this.escapeHtml(jsDiag.snippet.pointer)}--- JS syntax error</span>
@@ -722,15 +724,15 @@ class InoJsonApp {
         <span class="block-path">${block.path}</span>
         <div class="block-scripts">
           ${scriptKeys
-            .map(k => {
-              const sc = block.scripts[k];
-              if (!sc.exists) return "";
-              const crlfNotice = sc.hasCrLf ? "\\r\\n" : "\\n";
-              return `<span class="script-pill" title="${k}: has ${crlfNotice} line breaks">
+          .map(k => {
+            const sc = block.scripts[k];
+            if (!sc.exists) return "";
+            const crlfNotice = sc.hasCrLf ? "\\r\\n" : "\\n";
+            return `<span class="script-pill" title="${k}: has ${crlfNotice} line breaks">
                 <span class="pill-dot"></span>${k}
               </span>`;
-            })
-            .join("")}
+          })
+          .join("")}
         </div>
       </div>`;
     });
@@ -892,15 +894,15 @@ class InoJsonApp {
           ? `
             <div class="val-snippet-box">
               ${res.snippet.lines
-                .map(
-                  l => `
+            .map(
+              l => `
                 <div class="val-snippet-line ${l.isError ? "val-error-line" : ""}">
                   <span class="val-line-no">${l.lineNum}</span>
                   <span class="val-line-code">${this.escapeHtml(l.text)}</span>
                 </div>
               `
-                )
-                .join("")}
+            )
+            .join("")}
               <div class="val-pointer-line">
                 <span class="val-line-no"></span>
                 <span class="val-pointer">${this.escapeHtml(res.snippet.pointer)}--- JS syntax error</span>

@@ -363,18 +363,30 @@ export class DiffModal {
     const rightBlock = this.rightBlocks[this.activeBlockIndex] || this.rightBlocks[0];
 
     const allKeys = new Set([
-      "prescript",
-      "postscript",
-      "onSaveScript",
       ...Object.keys(leftBlock?.scripts || {}),
       ...Object.keys(rightBlock?.scripts || {})
     ]);
 
-    if (!allKeys.has(this.activeScriptKey)) {
-      this.activeScriptKey = "prescript";
+    // Only display tabs for scripts that actually exist in at least one block
+    const existingKeys = Array.from(allKeys).filter(k => {
+      const sL = leftBlock?.scripts?.[k];
+      const sR = rightBlock?.scripts?.[k];
+      return (sL && sL.exists) || (sR && sR.exists);
+    });
+
+    const displayKeys = existingKeys.length > 0 ? existingKeys : ["prescript", "postscript", "onSaveScript"];
+
+    if (!displayKeys.includes(this.activeScriptKey)) {
+      // Pick the first key that has content or diff
+      const keyWithContent = displayKeys.find(k => {
+        const leftScript = leftBlock?.scripts?.[k]?.readable || "";
+        const rightScript = rightBlock?.scripts?.[k]?.readable || "";
+        return leftScript || rightScript;
+      });
+      this.activeScriptKey = keyWithContent || displayKeys[0] || "prescript";
     }
 
-    allKeys.forEach(scriptKey => {
+    displayKeys.forEach(scriptKey => {
       const leftScript =
         this.modifiedLeftScripts.get(scriptKey) ??
         (leftBlock?.scripts?.[scriptKey]?.readable || "");
