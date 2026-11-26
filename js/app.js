@@ -396,15 +396,19 @@ class InoJsonApp {
     if (this.leftParsed) {
       leftBlocks = JsonEngine.findAllClientScripts(this.leftParsed);
       this.renderScriptsList(this.leftScriptsListEl, leftBlocks);
+    } else if (!leftText) {
+      this.leftScriptsListEl.innerHTML = `<span class="empty-hint">No JSON entered (optional for comparison)</span>`;
     } else {
-      this.leftScriptsListEl.innerHTML = `<span class="empty-hint">Waiting for valid JSON...</span>`;
+      this.leftScriptsListEl.innerHTML = `<span class="empty-hint hint-error">✖ Invalid JSON syntax (see details above)</span>`;
     }
 
     if (this.rightParsed) {
       rightBlocks = JsonEngine.findAllClientScripts(this.rightParsed);
       this.renderScriptsList(this.rightScriptsListEl, rightBlocks);
+    } else if (!rightText) {
+      this.rightScriptsListEl.innerHTML = `<span class="empty-hint">No JSON entered (optional for comparison)</span>`;
     } else {
-      this.rightScriptsListEl.innerHTML = `<span class="empty-hint">Waiting for valid JSON...</span>`;
+      this.rightScriptsListEl.innerHTML = `<span class="empty-hint hint-error">✖ Invalid JSON syntax (see details above)</span>`;
     }
 
     this.updateComparisonSummary(leftBlocks, rightBlocks);
@@ -728,7 +732,7 @@ class InoJsonApp {
             const sc = block.scripts[k];
             if (!sc.exists) return "";
             const crlfNotice = sc.hasCrLf ? "\\r\\n" : "\\n";
-            return `<span class="script-pill" title="${k}: has ${crlfNotice} line breaks">
+            return `<span class="script-pill" title="Click to open ${k} in IDE editor (${crlfNotice} line breaks)" data-script="${k}" role="button" style="cursor: pointer;">
                 <span class="pill-dot"></span>${k}
               </span>`;
           })
@@ -738,27 +742,114 @@ class InoJsonApp {
     });
 
     container.innerHTML = html;
+    container.querySelectorAll(".script-pill").forEach(pill => {
+      pill.addEventListener("click", () => {
+        const scriptKey = pill.dataset.script;
+        this.openDiffDialog(scriptKey);
+      });
+    });
   }
 
   updateComparisonSummary(leftBlocks, rightBlocks) {
     if (!this.compareSummaryEl) return;
 
-    if (!this.leftParsed || !this.rightParsed) {
+    const hasLeft = Boolean(this.leftParsed);
+    const hasRight = Boolean(this.rightParsed);
+
+    // Case 1: Both panels are empty
+    if (!hasLeft && !hasRight) {
       this.btnOpenDiffModal.disabled = true;
       this.compareSummaryEl.innerHTML = `
         <div class="summary-status waiting">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-          <span>Paste or upload two JSON bundles above to extract &amp; compare scripts</span>
+          <span>Paste or upload a JSON bundle above to inspect &amp; edit readable scripts</span>
         </div>
       `;
       return;
     }
 
+    // Case 2: Only Left (Base) is provided
+    if (hasLeft && !hasRight) {
+      const blockL = leftBlocks[0];
+      const scriptKeys = Object.keys(blockL?.scripts || {}).filter(k => blockL.scripts[k].exists);
+      if (scriptKeys.length === 0) {
+        this.btnOpenDiffModal.disabled = true;
+        this.compareSummaryEl.innerHTML = `
+          <div class="summary-status warning">
+            <span>⚠️ Base JSON loaded, but no "clientscripts" block was detected.</span>
+          </div>
+        `;
+        return;
+      }
+
+      this.btnOpenDiffModal.disabled = false;
+      const chipsHtml = scriptKeys
+        .map(k => `
+          <div class="script-status-chip chip-same" data-script="${k}" role="button" title="Click to open ${k} in IDE editor" style="cursor: pointer;">
+            <span class="chip-name">${k}</span>
+            <span class="chip-state">Ready</span>
+          </div>
+        `)
+        .join("");
+
+      this.compareSummaryEl.innerHTML = `
+        <div class="summary-active-row">
+          <div class="chips-group">
+            ${chipsHtml}
+          </div>
+          <div class="hint-text">
+            ✓ Base JSON loaded (${scriptKeys.length} script${scriptKeys.length > 1 ? "s" : ""}). Click below to open &amp; edit readable scripts (or paste Target JSON on the right to compare diffs).
+          </div>
+        </div>
+      `;
+      this.bindSummaryChipClicks();
+      return;
+    }
+
+    // Case 3: Only Right (Target) is provided
+    if (!hasLeft && hasRight) {
+      const blockR = rightBlocks[0];
+      const scriptKeys = Object.keys(blockR?.scripts || {}).filter(k => blockR.scripts[k].exists);
+      if (scriptKeys.length === 0) {
+        this.btnOpenDiffModal.disabled = true;
+        this.compareSummaryEl.innerHTML = `
+          <div class="summary-status warning">
+            <span>⚠️ Target JSON loaded, but no "clientscripts" block was detected.</span>
+          </div>
+        `;
+        return;
+      }
+
+      this.btnOpenDiffModal.disabled = false;
+      const chipsHtml = scriptKeys
+        .map(k => `
+          <div class="script-status-chip chip-same" data-script="${k}" role="button" title="Click to open ${k} in IDE editor" style="cursor: pointer;">
+            <span class="chip-name">${k}</span>
+            <span class="chip-state">Ready</span>
+          </div>
+        `)
+        .join("");
+
+      this.compareSummaryEl.innerHTML = `
+        <div class="summary-active-row">
+          <div class="chips-group">
+            ${chipsHtml}
+          </div>
+          <div class="hint-text">
+            ✓ Target JSON loaded (${scriptKeys.length} script${scriptKeys.length > 1 ? "s" : ""}). Click below to open &amp; edit readable scripts (or paste Base JSON on the left to compare diffs).
+          </div>
+        </div>
+      `;
+      this.bindSummaryChipClicks();
+      return;
+    }
+
+    // Case 4: Both Left and Right are provided
     if (leftBlocks.length === 0 && rightBlocks.length === 0) {
       this.btnOpenDiffModal.disabled = true;
       this.compareSummaryEl.innerHTML = `
         <div class="summary-status warning">
-          <span>⚠️ Could not find "clientscripts" with prescript/postscript/onSaveScript</span>
+          <span>⚠️ Could not find "clientscripts" block in the provided JSON bundles.</span>
         </div>
       `;
       return;
@@ -769,8 +860,16 @@ class InoJsonApp {
     const blockL = leftBlocks[0];
     const blockR = rightBlocks[0];
 
-    const keys = ["prescript", "postscript", "onSaveScript"];
-    const chipsHtml = keys
+    const allKeys = new Set([
+      "prescript",
+      "postscript",
+      "onSaveScript",
+      ...Object.keys(blockL?.scripts || {}),
+      ...Object.keys(blockR?.scripts || {})
+    ]);
+
+    const chipsHtml = Array.from(allKeys)
+      .filter(k => blockL?.scripts?.[k]?.exists || blockR?.scripts?.[k]?.exists)
       .map(k => {
         const leftScript = blockL?.scripts?.[k]?.readable || "";
         const rightScript = blockR?.scripts?.[k]?.readable || "";
@@ -787,7 +886,7 @@ class InoJsonApp {
         }
 
         return `
-        <div class="script-status-chip ${statusClass}">
+        <div class="script-status-chip ${statusClass}" data-script="${k}" role="button" title="Click to open ${k} in Diff Modal" style="cursor: pointer;">
           <span class="chip-name">${k}</span>
           <span class="chip-state">${statusText}</span>
         </div>
@@ -805,16 +904,67 @@ class InoJsonApp {
         </div>
       </div>
     `;
+    this.bindSummaryChipClicks();
   }
 
-  openDiffDialog(preferredScript = "prescript") {
-    if (!this.leftParsed || !this.rightParsed) {
-      alert("Please ensure both Left and Right contain valid JSON before comparing.");
+  bindSummaryChipClicks() {
+    this.compareSummaryEl.querySelectorAll(".script-status-chip").forEach(chip => {
+      chip.addEventListener("click", () => {
+        const scriptKey = chip.dataset.script;
+        this.openDiffDialog(scriptKey);
+      });
+    });
+  }
+
+  openDiffDialog(preferredScript = null) {
+    // 1. Force fresh synchronous analysis of whatever is currently in the editors
+    this.analyzeInputs();
+
+    const hasLeft = Boolean(this.leftParsed);
+    const hasRight = Boolean(this.rightParsed);
+
+    if (!hasLeft && !hasRight) {
+      this.showToast("⚠️ Please paste or upload your JSON bundle first!");
       return;
     }
 
-    this.diffModal.open(this.leftParsed, this.rightParsed, {
-      preferredScript,
+    const baseObj = this.leftParsed || this.rightParsed;
+    const targetObj = this.rightParsed || this.leftParsed;
+
+    // Pick a smart default script to open
+    let scriptToOpen = preferredScript;
+    if (!scriptToOpen) {
+      const leftBlocks = JsonEngine.findAllClientScripts(baseObj);
+      const rightBlocks = JsonEngine.findAllClientScripts(targetObj);
+      const bL = leftBlocks[0];
+      const bR = rightBlocks[0];
+
+      // Prefer a script with diff first
+      const allKeys = ["postscript", "prescript", "onSaveScript"];
+      for (const k of allKeys) {
+        const sL = bL?.scripts?.[k]?.readable || "";
+        const sR = bR?.scripts?.[k]?.readable || "";
+        if (sL && sR && sL !== sR) {
+          scriptToOpen = k;
+          break;
+        }
+      }
+
+      // If no diff, pick the first script that has content
+      if (!scriptToOpen) {
+        for (const k of ["prescript", "postscript", "onSaveScript"]) {
+          const sL = bL?.scripts?.[k]?.readable || "";
+          const sR = bR?.scripts?.[k]?.readable || "";
+          if (sL || sR) {
+            scriptToOpen = k;
+            break;
+          }
+        }
+      }
+    }
+
+    this.diffModal.open(baseObj, targetObj, {
+      preferredScript: scriptToOpen || "prescript",
       lineEndingPreference: this.lineEndingPreference
     });
   }

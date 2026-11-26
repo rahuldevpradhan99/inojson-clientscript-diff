@@ -64,7 +64,15 @@ export const JsonEngine = {
    */
   findAllClientScripts(rootObj, path = "$") {
     const results = [];
-    if (!rootObj || typeof rootObj !== "object") return results;
+    if (!rootObj) return results;
+
+    // If user pasted a single raw script string: e.g. "debugger;\r\nconsole.info..."
+    if (typeof rootObj === "string" && (rootObj.includes("\n") || rootObj.includes(";") || rootObj.includes("function") || rootObj.includes("editor"))) {
+      results.push(this.buildClientScriptEntry({ prescript: rootObj }, null, null, "$ (Single Script)"));
+      return results;
+    }
+
+    if (typeof rootObj !== "object") return results;
 
     // Check if the current object IS a clientscripts object (e.g. if user pasted just the clientscripts block)
     const isDirectClientScripts =
