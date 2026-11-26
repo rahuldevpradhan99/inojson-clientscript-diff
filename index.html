@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <base href="./">
+  <title>InoJson Script Compare & Diff Studio</title>
+  
+  <!-- CodeMirror Editor Assets -->
+  <link rel="stylesheet" href="vendor/codemirror/codemirror.min.css">
+  <link rel="stylesheet" href="vendor/codemirror/material-darker.min.css">
+  <link rel="stylesheet" href="vendor/codemirror/foldgutter.min.css">
+  <link rel="stylesheet" href="vendor/codemirror/dialog.min.css">
+  
+  <!-- Core UI & Diff Stylesheets -->
+  <link rel="stylesheet" href="css/styles.css">
+  <link rel="stylesheet" href="css/diff.css">
+  <link rel="stylesheet" href="css/editor.css">
+  
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  
+  <!-- JavaScript Syntax Parser (Acorn) loaded before Monaco AMD loader -->
+  <script src="vendor/acorn/acorn.min.js"></script>
+</head>
+<body class="dark-theme">
+  <div class="app-container">
+    <!-- Top Navigation Bar -->
+    <header class="app-header">
+      <div class="header-brand">
+        <div class="brand-icon">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="16 18 22 12 16 6"></polyline>
+            <polyline points="8 6 2 12 8 18"></polyline>
+            <line x1="12" y1="2" x2="12" y2="22" stroke-dasharray="2 2"></line>
+          </svg>
+        </div>
+        <div class="brand-text">
+          <div class="brand-title">
+            <span class="brand-name">InoJson</span>
+            <span class="brand-badge">ClientScripts Diff Studio</span>
+          </div>
+          <span class="brand-desc">Compare, edit &amp; convert escaped <code>clientscripts</code> (prescript, postscript, onSaveScript)</span>
+        </div>
+      </div>
+
+      <!-- Navigation Tabs -->
+      <nav class="nav-tabs-group">
+        <button class="nav-tab active" data-view="viewBundleComparator">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+          Bundle Comparator
+        </button>
+        <button class="nav-tab" data-view="viewQuickConverter">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+          Quick Snippet Converter
+        </button>
+      </nav>
+
+      <!-- Global Actions -->
+      <div class="header-actions">
+        <div class="setting-item" title="Line endings used when saving scripts back to JSON">
+          <label for="selLineEnding">Line Endings:</label>
+          <select id="selLineEnding" class="styled-select-sm">
+            <option value="crlf" selected>CRLF (\r\n) [Bundle Standard]</option>
+            <option value="lf">LF (\n) [Unix]</option>
+            <option value="preserve">Preserve Original</option>
+          </select>
+        </div>
+        <button class="btn-subtle" id="btnLoadSample" title="Load realistic sample low-code bundles">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+          Load Sample
+        </button>
+        <button class="btn-subtle" id="btnSwap" title="Swap Left and Right JSONs">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/></svg>
+          Swap
+        </button>
+        <button class="btn-subtle btn-danger-subtle" id="btnClearAll" title="Clear both inputs">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+          Clear
+        </button>
+      </div>
+    </header>
+
+    <!-- Main Workspace Section: Bundle Comparator -->
+    <main class="view-section" id="viewBundleComparator">
+      <!-- Dual JSON Input Panels -->
+      <div class="dual-workspace">
+        <!-- Left Panel: Base / Original JSON -->
+        <section class="json-panel" id="panelLeft">
+          <div class="panel-header">
+            <div class="panel-info">
+              <span class="panel-tag tag-base">Base / Original JSON</span>
+              <span class="panel-subtitle">e.g. Production or Main branch</span>
+            </div>
+            <div class="panel-status-group">
+              <span class="status-tag" id="leftStatus">Analyzing...</span>
+              <div class="upload-btn-wrap" id="dropZoneLeft" title="Click or Drag &amp; Drop .json file anywhere in panel">
+                <input type="file" id="fileInputLeft" accept=".json,application/json" class="hidden-input">
+                <button class="btn-upload">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                  Upload JSON
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Uploaded File Sync & Modification Tracker -->
+          <div class="file-sync-bar hidden" id="leftFileBar">
+            <div class="file-sync-info">
+              <span class="file-name-badge" id="leftFileName">📄 bundle.json</span>
+              <span class="file-dirty-badge clean" id="leftDirtyBadge">✓ Unchanged</span>
+            </div>
+            <div class="file-sync-actions">
+              <label class="autosync-toggle hidden" id="leftAutoSyncWrap" title="Automatically write panel edits and merged changes directly back to the original file on disk">
+                <input type="checkbox" id="chkAutoSyncLeft">
+                <span>Auto-Save</span>
+              </label>
+              <button class="btn-file-action btn-save-orig hidden" id="btnSaveFileLeft" title="Write changes directly to the original file">
+                💾 Save to File
+              </button>
+              <button class="btn-file-action hidden" id="btnViewEditsLeft" title="Compare original file vs your current edits">
+                👁️ My Changes
+              </button>
+              <button class="btn-file-action btn-revert-orig hidden" id="btnRevertLeft" title="Discard edits and restore original uploaded file">
+                ↺ Revert
+              </button>
+            </div>
+          </div>
+
+          <!-- Detected Scripts List -->
+          <div class="scripts-detection-bar" id="leftScriptsList">
+            <!-- Detected clientscripts chips -->
+          </div>
+
+          <!-- Base JSON Validation & Diagnostics Panel (Immediately visible at top of editor) -->
+          <div class="validation-panel" id="leftValidationPanel">
+            <!-- Dynamically populated by Validator in app.js -->
+          </div>
+
+          <!-- JSON Input Mount (CodeMirror / Monaco) -->
+          <div class="json-input-wrap">
+            <textarea id="leftJsonInput" class="json-textarea hidden" spellcheck="false" placeholder="Paste Base / Original JSON bundle here..."></textarea>
+            <div id="cmLeftMount" class="cm-panel-mount"></div>
+          </div>
+
+          <!-- Base JSON Quick Export Actions -->
+          <div class="panel-footer-actions">
+            <span class="footer-tip" id="leftFooterTip">Receives merged lines from updated script</span>
+            <div class="btn-group">
+              <button class="btn-action btn-action-sm" id="btnFoldAllLeft" title="Fold all JSON blocks">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 14 10 8 16 14"/><line x1="4" y1="19" x2="20" y2="19"/></svg>
+                Fold All
+              </button>
+              <button class="btn-action btn-action-sm" id="btnUnfoldAllLeft" title="Unfold all JSON blocks">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 10 10 16 16 10"/><line x1="4" y1="5" x2="20" y2="5"/></svg>
+                Unfold All
+              </button>
+              <button class="btn-action btn-action-sm" id="btnSearchLeft" title="Find in editor (Cmd/Ctrl+F)">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                Search
+              </button>
+              <button class="btn-action btn-action-sm" id="btnFormatLeftJson" title="Pretty-format Base JSON (2-space indent)">
+                Format JSON
+              </button>
+              <button class="btn-action" id="btnCopyLeftJson" title="Copy Base JSON to clipboard">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                Copy Base JSON
+              </button>
+              <button class="btn-action" id="btnDownloadLeftJson" title="Download Base JSON bundle">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                Download JSON
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <!-- Right Panel: Target / Modified JSON -->
+        <section class="json-panel" id="panelRight">
+          <div class="panel-header">
+            <div class="panel-info">
+              <span class="panel-tag tag-target">Target / Modified JSON</span>
+              <span class="panel-subtitle">e.g. Feature branch or To-Be-Committed bundle</span>
+            </div>
+            <div class="panel-status-group">
+              <span class="status-tag" id="rightStatus">Analyzing...</span>
+              <div class="upload-btn-wrap" id="dropZoneRight" title="Click or Drag &amp; Drop .json file anywhere in panel">
+                <input type="file" id="fileInputRight" accept=".json,application/json" class="hidden-input">
+                <button class="btn-upload">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                  Upload JSON
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Uploaded File Sync & Modification Tracker -->
+          <div class="file-sync-bar hidden" id="rightFileBar">
+            <div class="file-sync-info">
+              <span class="file-name-badge" id="rightFileName">📄 bundle.json</span>
+              <span class="file-dirty-badge clean" id="rightDirtyBadge">✓ Unchanged</span>
+            </div>
+            <div class="file-sync-actions">
+              <label class="autosync-toggle hidden" id="rightAutoSyncWrap" title="Automatically write panel edits and merged changes directly back to the original file on disk">
+                <input type="checkbox" id="chkAutoSyncRight">
+                <span>Auto-Save</span>
+              </label>
+              <button class="btn-file-action btn-save-orig hidden" id="btnSaveFileRight" title="Write changes directly to the original file">
+                💾 Save to File
+              </button>
+              <button class="btn-file-action hidden" id="btnViewEditsRight" title="Compare original file vs your current edits">
+                👁️ My Changes
+              </button>
+              <button class="btn-file-action btn-revert-orig hidden" id="btnRevertRight" title="Discard edits and restore original uploaded file">
+                ↺ Revert
+              </button>
+            </div>
+          </div>
+
+          <!-- Detected Scripts List -->
+          <div class="scripts-detection-bar" id="rightScriptsList">
+            <!-- Detected clientscripts chips -->
+          </div>
+
+          <!-- Target JSON Validation & Diagnostics Panel (Immediately visible at top of editor) -->
+          <div class="validation-panel" id="rightValidationPanel">
+            <!-- Dynamically populated by Validator in app.js -->
+          </div>
+
+          <!-- JSON Input Mount (CodeMirror / Monaco) -->
+          <div class="json-input-wrap">
+            <textarea id="rightJsonInput" class="json-textarea hidden" spellcheck="false" placeholder="Paste Target / Modified JSON bundle here..."></textarea>
+            <div id="cmRightMount" class="cm-panel-mount"></div>
+          </div>
+
+          <!-- Target JSON Quick Export Actions -->
+          <div class="panel-footer-actions">
+            <span class="footer-tip" id="rightFooterTip">Ready for Prod commit when changes are applied</span>
+            <div class="btn-group">
+              <button class="btn-action btn-action-sm" id="btnFoldAllRight" title="Fold all JSON blocks">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 14 10 8 16 14"/><line x1="4" y1="19" x2="20" y2="19"/></svg>
+                Fold All
+              </button>
+              <button class="btn-action btn-action-sm" id="btnUnfoldAllRight" title="Unfold all JSON blocks">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 10 10 16 16 10"/><line x1="4" y1="5" x2="20" y2="5"/></svg>
+                Unfold All
+              </button>
+              <button class="btn-action btn-action-sm" id="btnSearchRight" title="Find in editor (Cmd/Ctrl+F)">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                Search
+              </button>
+              <button class="btn-action btn-action-sm" id="btnFormatRightJson" title="Pretty-format Target JSON (2-space indent)">
+                Format JSON
+              </button>
+              <button class="btn-action" id="btnCopyRightJson" title="Copy Target JSON to clipboard">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                Copy Target JSON
+              </button>
+              <button class="btn-action" id="btnDownloadRightJson" title="Download Target JSON bundle">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                Download JSON
+              </button>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <!-- Comparison Banner & Primary CTA -->
+      <div class="action-banner">
+        <div class="comparison-summary" id="compareSummary">
+          <!-- Live summary populated by app.js -->
+        </div>
+
+        <div class="main-cta-wrap">
+          <button class="btn-secondary-cta" id="btnCompareFullJson" title="Compare the entire Base and Target JSON documents side-by-side and merge any line">
+            <div class="cta-icon-glow">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="15" x2="15" y2="15"/><line x1="12" y1="12" x2="12" y2="18"/></svg>
+            </div>
+            <div class="cta-text">
+              <span class="cta-title">Compare Full JSON</span>
+              <span class="cta-subtitle">Side-by-side diff &amp; merge across entire JSON</span>
+            </div>
+          </button>
+
+          <button class="btn-hero-cta" id="btnOpenDiffModal">
+            <div class="cta-icon-glow">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
+            </div>
+            <div class="cta-text">
+              <span class="cta-title">Open Readable Scripts &amp; Compare Diff</span>
+              <span class="cta-subtitle">Unescape &amp; merge prescript / postscript / onSaveScript</span>
+            </div>
+            <div class="cta-arrow">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
+            </div>
+          </button>
+        </div>
+      </div>
+    </main>
+
+    <!-- Secondary View: Quick Snippet Converter -->
+    <main class="view-section hidden" id="viewQuickConverter">
+      <div class="converter-card">
+        <div class="converter-header">
+          <h3>Single Script Escaper / Unescaper</h3>
+          <p>Quickly convert a single escaped string with <code>\r\n</code> and <code>\"</code> into clean readable JavaScript, or convert clean JS back to JSON format string.</p>
+        </div>
+
+        <div class="converter-grid">
+          <div class="converter-col">
+            <div class="conv-col-header">
+              <span class="conv-label">Escaped JSON String (Raw \r\n and \")</span>
+              <button class="btn-micro" id="btnCopyConvRaw">Copy</button>
+            </div>
+            <textarea id="converterRawInput" class="conv-textarea" placeholder='Paste "debugger;\r\nconsole.info(\"model\", model);\r\n..." here'></textarea>
+            <div class="conv-val-indicator" id="convRawVal"></div>
+          </div>
+
+          <div class="converter-middle">
+            <button class="btn-conv" id="btnConvToReadable" title="Convert escaped string to readable JS">
+              <span>To Readable JS</span>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+            </button>
+            <button class="btn-conv" id="btnConvToEscaped" title="Convert readable JS to escaped JSON string">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+              <span>To Escaped JSON String</span>
+            </button>
+          </div>
+
+          <div class="converter-col">
+            <div class="conv-col-header">
+              <span class="conv-label">Readable JavaScript (Clean Code Editor)</span>
+              <div class="conv-header-actions">
+                <button class="btn-micro" id="btnFoldAllCleanJs" title="Fold all JS blocks">Fold All</button>
+                <button class="btn-micro" id="btnUnfoldAllCleanJs" title="Unfold all JS blocks">Unfold All</button>
+                <button class="btn-micro" id="btnSearchCleanJs" title="Find in JS editor (Cmd/Ctrl+F)">Search</button>
+                <button class="btn-micro" id="btnFormatConvClean" title="Format JavaScript with clean 4-space indentation">Format JS</button>
+                <button class="btn-micro" id="btnCopyConvClean" title="Copy clean JS to clipboard">Copy</button>
+              </div>
+            </div>
+            <!-- Live JS Diagnostics Banner (Top of Editor) -->
+            <div class="conv-val-panel" id="convCleanValPanel">
+              <!-- Dynamically populated by Validator in app.js -->
+            </div>
+            <div class="conv-editor-wrap">
+              <textarea id="converterCleanInput" class="conv-textarea hidden" placeholder="Clean JavaScript appears here..."></textarea>
+              <div id="cmCleanJsMount" class="conv-cm-mount"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- CodeMirror Vendor Scripts -->
+  <script src="vendor/codemirror/codemirror.min.js"></script>
+  <script src="vendor/codemirror/javascript.min.js"></script>
+  <script src="vendor/codemirror/matchbrackets.min.js"></script>
+  <script src="vendor/codemirror/closebrackets.min.js"></script>
+  <script src="vendor/codemirror/active-line.min.js"></script>
+  <!-- Fold addons -->
+  <script src="vendor/codemirror/foldcode.min.js"></script>
+  <script src="vendor/codemirror/foldgutter.min.js"></script>
+  <script src="vendor/codemirror/brace-fold.min.js"></script>
+  <!-- Search addons (dialog required for search UI) -->
+  <script src="vendor/codemirror/searchcursor.min.js"></script>
+  <script src="vendor/codemirror/dialog.min.js"></script>
+  <script src="vendor/codemirror/search.min.js"></script>
+  <script src="vendor/codemirror/jump-to-line.min.js"></script>
+
+  <!-- Main application script -->
+  <script src="js/bundle.js"></script>
+</body>
+</html>
