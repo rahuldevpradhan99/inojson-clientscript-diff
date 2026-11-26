@@ -11,23 +11,39 @@ import { JsonEngine } from "./json-engine.js";
 import { Validator } from "./validator.js";
 import { monacoManager } from "./monaco-manager.js";
 
+const FULL_JSON_KEY = "__FULL_JSON__";
+
 export class DiffModal {
   constructor(options = {}) {
     this.container = null;
     this.isOpen = false;
-    this.activeScriptKey = "prescript";
+    this.activeScriptKey = FULL_JSON_KEY;
     this.activeBlockIndex = 0;
     this.viewMode = "split"; // 'split', 'unified', 'edit'
     this.editorSubMode = "js"; // 'js' or 'json'
     this.ignoreWhitespace = false;
+    this.collapseUnchanged = true;
+    this.searchQuery = "";
+    this.searchMatches = [];
+    this.searchMatchIdx = -1;
+    this.expandedRanges = new Set();
     this.currentHunkIndex = 0;
 
     // Working state for both sides (allows merging into Old or New)
+    this.hasLeftInput = false;
+    this.hasRightInput = false;
+    this.leftTitleLabel = null;
+    this.rightTitleLabel = null;
+    this.leftFullJsonText = "";
+    this.rightFullJsonText = "";
+    this.fullJsonModified = false;
+    this.leftIndent = 2;
+    this.rightIndent = 2;
     this.leftBlocks = [];
     this.rightBlocks = [];
     this.modifiedLeftScripts = new Map();  // scriptKey -> editedReadableText (Old)
     this.modifiedRightScripts = new Map(); // scriptKey -> editedReadableText (New)
-    this.mergeHistory = []; // Undo stack: [{ scriptKey, leftText, rightText }]
+    this.mergeHistory = []; // Undo stack
     this.cmModalInstance = null;
     this.modalMonacoInstance = null;
     this.currentEditorDiag = null;
@@ -129,6 +145,19 @@ export class DiffModal {
                 <input type="checkbox" id="chkIgnoreWs">
                 <span>Ignore Whitespace</span>
               </label>
+
+              <label class="toggle-label" id="lblCollapseEqual" title="Collapse large identical code sections to focus on changes">
+                <input type="checkbox" id="chkCollapseEqual" checked>
+                <span>Changes Only Context</span>
+              </label>
+
+              <!-- In-Modal Diff Search -->
+              <div class="modal-search-box" id="modalSearchBox">
+                <input type="text" id="modalSearchInput" class="modal-search-input" placeholder="Find in diff (Cmd/Ctrl+F)..." autocomplete="off">
+                <span class="modal-search-count" id="modalSearchCount"></span>
+                <button class="btn-nav btn-search-step" id="btnModalSearchPrev" title="Previous match">▲</button>
+                <button class="btn-nav btn-search-step" id="btnModalSearchNext" title="Next match">▼</button>
+              </div>
             </div>
 
             <div class="toolbar-right">
@@ -211,9 +240,37 @@ export class DiffModal {
       this.switchViewMode("split");
     });
 
+    // In-modal diff search
+    const searchInput = el.querySelector("#modalSearchInput");
+    searchInput?.addEventListener("input", e => {
+      this.searchQuery = e.target.value;
+      this.applyDiffSearch(true);
+    });
+    searchInput?.addEventListener("keydown", e => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        this.stepDiffSearch(e.shiftKey ? -1 : 1);
+      } else if (e.key === "Escape") {
+        e.stopPropagation();
+        this.searchQuery = "";
+        searchInput.value = "";
+        this.applyDiffSearch(false);
+      }
+    });
+    el.querySelector("#btnModalSearchPrev")?.addEventListener("click", () => this.stepDiffSearch(-1));
+    el.querySelector("#btnModalSearchNext")?.addEventListener("click", () => this.stepDiffSearch(1));
+
     // Ignore whitespace
     el.querySelector("#chkIgnoreWs").addEventListener("change", e => {
       this.ignoreWhitespace = e.target.checked;
+      this.expandedRanges.clear();
+      this.renderCurrentScript();
+    });
+
+    // Collapse large unchanged runs
+    el.querySelector("#chkCollapseEqual")?.addEventListener("change", e => {
+      this.collapseUnchanged = e.target.checked;
+      this.expandedRanges.clear();
       this.renderCurrentScript();
     });
 
@@ -227,10 +284,10 @@ export class DiffModal {
     el.querySelector("#btnPrevHunk").addEventListener("click", () => this.jumpHunk(-1));
     el.querySelector("#btnNextHunk").addEventListener("click", () => this.jumpHunk(1));
 
-    // Format JS
+    // Format JS / JSON
     el.querySelector("#btnFormatJs").addEventListener("click", () => this.formatCurrentScript());
 
-    // Copy clean JS
+    // Copy clean JS / JSON
     el.querySelector("#btnCopyCleanJs").addEventListener("click", () => this.copyCleanJs());
 
     // Reset script
@@ -238,27 +295,33 @@ export class DiffModal {
 
     // Apply to Base (Old) JSON
     el.querySelector("#btnApplyOldJson").addEventListener("click", () => {
-      this.applyMergedChanges("old");
-      this.close();
+      if (this.applyMergedChanges("old") !== false) this.close();
     });
 
     // Apply to Target (New) JSON
     el.querySelector("#btnApplyNewJson").addEventListener("click", () => {
-      this.applyMergedChanges("new");
-      this.close();
+      if (this.applyMergedChanges("new") !== false) this.close();
     });
 
     // Apply to Both JSONs & Exit
     el.querySelector("#btnApplyBothAndClose").addEventListener("click", () => {
-      this.applyMergedChanges("both");
-      this.close();
+      if (this.applyMergedChanges("both") !== false) this.close();
     });
 
     // Keyboard shortcuts
     document.addEventListener("keydown", e => {
       if (!this.isOpen) return;
 
-      if (e.key === "Escape") {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "f") {
+        if (this.viewMode !== "edit") {
+          e.preventDefault();
+          const input = this.container.querySelector("#modalSearchInput");
+          if (input) {
+            input.focus();
+            input.select();
+          }
+        }
+      } else if (e.key === "Escape") {
         this.close();
       } else if (e.altKey && e.key === "ArrowDown") {
         e.preventDefault();
@@ -275,7 +338,20 @@ export class DiffModal {
     });
   }
 
+  disposeActiveEditors() {
+    if (this.modalMonacoInstance) {
+      try {
+        this.modalMonacoInstance.dispose();
+      } catch (e) {}
+      this.modalMonacoInstance = null;
+    }
+    if (this.cmModalInstance) {
+      this.cmModalInstance = null;
+    }
+  }
+
   switchViewMode(mode) {
+    this.disposeActiveEditors();
     this.viewMode = mode;
     const modeBtns = this.container.querySelectorAll(".seg-btn");
     modeBtns.forEach(b => b.classList.toggle("active", b.dataset.mode === mode));
@@ -285,40 +361,124 @@ export class DiffModal {
     this.container.querySelector("#bulkMergeGroup")?.classList.toggle("hidden", isEdit);
     this.container.querySelector("#hunkNavGroup")?.classList.toggle("hidden", isEdit);
     this.container.querySelector("#lblIgnoreWs")?.classList.toggle("hidden", isEdit);
+    this.container.querySelector("#lblCollapseEqual")?.classList.toggle("hidden", isEdit);
+    this.container.querySelector("#modalSearchBox")?.classList.toggle("hidden", isEdit);
     this.container.querySelector("#editReturnGroup")?.classList.toggle("hidden", !isEdit);
+
+    if (isEdit) {
+      this.editorSubMode = this.activeScriptKey === FULL_JSON_KEY ? "json" : "js";
+    }
 
     this.renderCurrentScript();
   }
 
   open(leftJsonObj, rightJsonObj, options = {}) {
+    this.disposeActiveEditors();
+
     this.leftJsonObj = leftJsonObj;
     this.rightJsonObj = rightJsonObj;
+    this.hasLeftInput = options.hasLeft !== undefined ? options.hasLeft : Boolean(leftJsonObj);
+    this.hasRightInput = options.hasRight !== undefined ? options.hasRight : Boolean(rightJsonObj);
+    this.singleSideMode =
+      options.singleSideMode ||
+      (this.hasLeftInput && !this.hasRightInput ? "left" : !this.hasLeftInput && this.hasRightInput ? "right" : null);
+    this.leftTitleLabel = options.leftTitle || null;
+    this.rightTitleLabel = options.rightTitle || null;
+    this.applyTargetOverride = options.applyTargetOverride || null;
     this.lineEndingPreference = options.lineEndingPreference || "preserve";
 
-    this.leftBlocks = JsonEngine.findAllClientScripts(leftJsonObj);
-    this.rightBlocks = JsonEngine.findAllClientScripts(rightJsonObj);
+    this.leftIndent = options.leftRawText ? JsonEngine.detectIndentation(options.leftRawText) : 2;
+    this.rightIndent = options.rightRawText ? JsonEngine.detectIndentation(options.rightRawText) : 2;
 
-    if (this.leftBlocks.length === 0 && this.rightBlocks.length === 0) {
-      alert("No 'clientscripts' blocks or scripts found in the provided JSONs!");
-      return;
-    }
+    this.initialLeftFullJsonText =
+      options.leftRawText !== undefined
+        ? options.leftRawText
+        : leftJsonObj
+        ? JSON.stringify(leftJsonObj, null, this.leftIndent || 2)
+        : "";
+    this.initialRightFullJsonText =
+      options.rightRawText !== undefined
+        ? options.rightRawText
+        : rightJsonObj
+        ? JSON.stringify(rightJsonObj, null, this.rightIndent || 2)
+        : "";
+
+    this.leftFullJsonText = this.initialLeftFullJsonText;
+    this.rightFullJsonText = this.initialRightFullJsonText;
+    this.fullJsonModified = false;
+
+    this.leftBlocks = leftJsonObj ? JsonEngine.findAllClientScripts(leftJsonObj) : [];
+    this.rightBlocks = rightJsonObj ? JsonEngine.findAllClientScripts(rightJsonObj) : [];
 
     this.activeBlockIndex = 0;
-    this.activeScriptKey = options.preferredScript || "prescript";
+    const hasScripts = this.leftBlocks.length > 0 || this.rightBlocks.length > 0;
+    this.activeScriptKey = options.preferredScript || (hasScripts ? "prescript" : FULL_JSON_KEY);
+    if (this.activeScriptKey !== FULL_JSON_KEY && !hasScripts) {
+      this.activeScriptKey = FULL_JSON_KEY;
+    }
+
     this.modifiedLeftScripts.clear();
     this.modifiedRightScripts.clear();
     this.mergeHistory = [];
+    this.expandedRanges.clear();
+    this.searchQuery = "";
+    const searchInput = this.container.querySelector("#modalSearchInput");
+    if (searchInput) searchInput.value = "";
+    const searchCount = this.container.querySelector("#modalSearchCount");
+    if (searchCount) searchCount.textContent = "";
 
+    this.updateFooterButtons();
     this.renderBlockSelector();
     this.renderScriptTabs();
-    this.switchViewMode(this.viewMode);
+    this.switchViewMode(options.viewMode || "split");
 
     this.container.classList.remove("hidden");
     this.isOpen = true;
     document.body.classList.add("modal-open");
   }
 
+  updateFooterButtons() {
+    const btnOld = this.container.querySelector("#btnApplyOldJson");
+    const btnNew = this.container.querySelector("#btnApplyNewJson");
+    const btnBoth = this.container.querySelector("#btnApplyBothAndClose");
+    if (!btnOld || !btnNew || !btnBoth) return;
+
+    if (this.applyTargetOverride === "left") {
+      btnOld.textContent = "💾 Apply Changes to Base (Original) JSON";
+      btnOld.classList.remove("hidden");
+      btnNew.classList.add("hidden");
+      btnBoth.classList.add("hidden");
+      return;
+    }
+    if (this.applyTargetOverride === "right") {
+      btnNew.textContent = "💾 Apply Changes to Target JSON";
+      btnNew.classList.remove("hidden");
+      btnOld.classList.add("hidden");
+      btnBoth.classList.add("hidden");
+      return;
+    }
+
+    if (this.singleSideMode === "left") {
+      btnOld.textContent = "💾 Apply Changes to Uploaded Base JSON";
+      btnOld.classList.remove("hidden");
+      btnNew.classList.add("hidden");
+      btnBoth.classList.add("hidden");
+    } else if (this.singleSideMode === "right") {
+      btnOld.classList.add("hidden");
+      btnNew.textContent = "💾 Apply Changes to Uploaded Target JSON";
+      btnNew.classList.remove("hidden");
+      btnBoth.classList.add("hidden");
+    } else {
+      btnOld.textContent = "Apply to Base (Old) JSON";
+      btnNew.textContent = "Apply to Target (New) JSON";
+      btnOld.classList.remove("hidden");
+      btnNew.classList.remove("hidden");
+      btnBoth.classList.remove("hidden");
+    }
+  }
+
   close() {
+    this.disposeActiveEditors();
     this.container.classList.add("hidden");
     this.isOpen = false;
     document.body.classList.remove("modal-open");
@@ -374,38 +534,34 @@ export class DiffModal {
       return (sL && sL.exists) || (sR && sR.exists);
     });
 
-    const displayKeys = existingKeys.length > 0 ? existingKeys : ["prescript", "postscript", "onSaveScript"];
+    const displayKeys = [FULL_JSON_KEY, ...existingKeys];
 
     if (!displayKeys.includes(this.activeScriptKey)) {
-      // Pick the first key that has content or diff
-      const keyWithContent = displayKeys.find(k => {
-        const leftScript = leftBlock?.scripts?.[k]?.readable || "";
-        const rightScript = rightBlock?.scripts?.[k]?.readable || "";
-        return leftScript || rightScript;
-      });
-      this.activeScriptKey = keyWithContent || displayKeys[0] || "prescript";
+      this.activeScriptKey = FULL_JSON_KEY;
     }
 
     displayKeys.forEach(scriptKey => {
-      const leftScript =
-        this.modifiedLeftScripts.get(scriptKey) ??
-        (leftBlock?.scripts?.[scriptKey]?.readable || "");
+      const isFull = scriptKey === FULL_JSON_KEY;
+      const leftVal = isFull
+        ? this.leftFullJsonText
+        : this.modifiedLeftScripts.get(scriptKey) ?? (leftBlock?.scripts?.[scriptKey]?.readable || "");
+      const rightVal = isFull
+        ? this.rightFullJsonText
+        : this.modifiedRightScripts.get(scriptKey) ?? (rightBlock?.scripts?.[scriptKey]?.readable || "");
 
-      const rightScript =
-        this.modifiedRightScripts.get(scriptKey) ??
-        (rightBlock?.scripts?.[scriptKey]?.readable || "");
-
-      const isDiff = leftScript !== rightScript;
-      const isModified = this.modifiedLeftScripts.has(scriptKey) || this.modifiedRightScripts.has(scriptKey);
+      const isDiff = leftVal !== rightVal;
+      const isModified = isFull
+        ? this.fullJsonModified
+        : this.modifiedLeftScripts.has(scriptKey) || this.modifiedRightScripts.has(scriptKey);
 
       const tab = document.createElement("button");
-      tab.className = `script-tab ${scriptKey === this.activeScriptKey ? "active" : ""}`;
+      tab.className = `script-tab ${isFull ? "script-tab-fulljson" : ""} ${scriptKey === this.activeScriptKey ? "active" : ""}`;
       tab.dataset.script = scriptKey;
 
       let badgeHtml = "";
       if (isDiff) {
         badgeHtml = `<span class="tab-badge badge-diff">Diff</span>`;
-      } else if (leftScript || rightScript) {
+      } else if (leftVal || rightVal) {
         badgeHtml = isModified
           ? `<span class="tab-badge badge-merged">✓ Merged</span>`
           : `<span class="tab-badge badge-same">Same</span>`;
@@ -413,13 +569,20 @@ export class DiffModal {
         badgeHtml = `<span class="tab-badge badge-empty">Empty</span>`;
       }
 
+      const labelText = isFull ? "📄 Full JSON" : scriptKey;
       tab.innerHTML = `
-        <span class="tab-name">${scriptKey}</span>
+        <span class="tab-name">${this.escapeHtml(labelText)}</span>
         ${badgeHtml}
       `;
 
       tab.addEventListener("click", () => {
+        if (this.activeScriptKey === scriptKey) return;
+        this.disposeActiveEditors();
         this.activeScriptKey = scriptKey;
+        this.expandedRanges.clear();
+        if (this.viewMode === "edit") {
+          this.editorSubMode = scriptKey === FULL_JSON_KEY ? "json" : "js";
+        }
         this.renderScriptTabs();
         this.renderCurrentScript();
       });
@@ -429,6 +592,16 @@ export class DiffModal {
   }
 
   getCurrentScripts() {
+    if (this.activeScriptKey === FULL_JSON_KEY) {
+      return {
+        isFullJson: true,
+        leftText: this.leftFullJsonText || "",
+        rightText: this.rightFullJsonText || "",
+        hadCrLf: false,
+        path: "$ (Full JSON Document)"
+      };
+    }
+
     const leftBlock = this.leftBlocks[this.activeBlockIndex] || this.leftBlocks[0];
     const rightBlock = this.rightBlocks[this.activeBlockIndex] || this.rightBlocks[0];
 
@@ -447,12 +620,12 @@ export class DiffModal {
 
     const path = rightBlock?.path || leftBlock?.path || "$.clientscripts";
 
-    return { leftText, rightText, hadCrLf, path };
+    return { isFullJson: false, leftText, rightText, hadCrLf, path };
   }
 
   renderCurrentScript() {
     const body = this.container.querySelector("#modalDiffBody");
-    const { leftText, rightText, hadCrLf, path } = this.getCurrentScripts();
+    const { isFullJson, leftText, rightText, hadCrLf, path } = this.getCurrentScripts();
 
     const diff = DiffEngine.computeDiff(leftText, rightText, {
       ignoreWhitespace: this.ignoreWhitespace
@@ -460,7 +633,15 @@ export class DiffModal {
     this.currentDiff = diff;
     this.currentHunkIndex = 0;
 
-    this.updateStatusInfo(diff, path, hadCrLf);
+    this.updateStatusInfo(diff, path, hadCrLf, isFullJson);
+
+    // Update toolbar button labels for Full JSON vs JS script
+    const fmtBtn = this.container.querySelector("#btnFormatJs");
+    const copyBtn = this.container.querySelector("#btnCopyCleanJs");
+    if (fmtBtn) fmtBtn.title = isFullJson ? "Format JSON with 2-space indent" : "Format and indent readable JavaScript";
+    if (copyBtn) {
+      copyBtn.lastChild && (copyBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> ${isFullJson ? "Copy JSON" : "Copy Readable JS"}`);
+    }
 
     const btnUndo = this.container.querySelector("#btnUndoMerge");
     if (btnUndo) {
@@ -468,15 +649,19 @@ export class DiffModal {
     }
 
     if (this.viewMode === "split") {
-      this.renderSplitView(body, diff, leftText, rightText);
+      this.renderSplitView(body, diff, leftText, rightText, isFullJson);
     } else if (this.viewMode === "unified") {
-      this.renderUnifiedView(body, diff);
+      this.renderUnifiedView(body, diff, isFullJson);
     } else if (this.viewMode === "edit") {
       this.renderCodeMirrorEditor(body, leftText, rightText);
     }
+
+    if (this.viewMode !== "edit" && this.searchQuery && this.searchQuery.trim()) {
+      this.applyDiffSearch(false);
+    }
   }
 
-  updateStatusInfo(diff, path, hadCrLf) {
+  updateStatusInfo(diff, path, hadCrLf, isFullJson = false) {
     const hunkStatus = this.container.querySelector("#hunkStatus");
     const footerPath = this.container.querySelector("#footerScriptPath");
     const footerStats = this.container.querySelector("#footerDiffStats");
@@ -493,16 +678,82 @@ export class DiffModal {
       completionBadge.textContent = `${changes} differences to merge`;
     }
 
-    footerPath.textContent = `Path: ${path}.${this.activeScriptKey}`;
+    footerPath.textContent = isFullJson ? "Path: $ (Entire JSON Document)" : `Path: ${path}.${this.activeScriptKey}`;
     footerStats.innerHTML = `<span class="diff-add">+${diff.stats.addedLines}</span> <span class="diff-del">-${diff.stats.deletedLines}</span> <span class="diff-mod">~${diff.stats.modifiedLines}</span>`;
+  }
+
+  /**
+   * Collapses long identical sections (when enabled) so 5,000+ line JSON diffs stay crisp & instant
+   */
+  buildVisibleItems(alignedRows) {
+    if (!this.collapseUnchanged || alignedRows.length <= 80) {
+      return alignedRows.map((row, idx) => ({ kind: "row", row, idx }));
+    }
+
+    const contextRadius = 4;
+    const total = alignedRows.length;
+    const visible = new Uint8Array(total);
+    let anyDiff = false;
+
+    for (let i = 0; i < total; i++) {
+      if (alignedRows[i].type !== "equal") {
+        anyDiff = true;
+        const start = Math.max(0, i - contextRadius);
+        const end = Math.min(total - 1, i + contextRadius);
+        for (let j = start; j <= end; j++) visible[j] = 1;
+      }
+    }
+
+    // If completely identical, show top 40 lines + collapse rest so user sees content cleanly
+    if (!anyDiff) {
+      for (let i = 0; i < Math.min(40, total); i++) visible[i] = 1;
+    }
+
+    const items = [];
+    let i = 0;
+    while (i < total) {
+      if (visible[i]) {
+        items.push({ kind: "row", row: alignedRows[i], idx: i });
+        i++;
+      } else {
+        const start = i;
+        while (i < total && !visible[i]) i++;
+        const end = i - 1;
+        const count = end - start + 1;
+        const rangeId = `${start}-${end}`;
+        if (count < 10 || this.expandedRanges.has(rangeId)) {
+          for (let j = start; j <= end; j++) {
+            items.push({ kind: "row", row: alignedRows[j], idx: j });
+          }
+        } else {
+          items.push({ kind: "collapsed", start, end, count, rangeId });
+        }
+      }
+    }
+    return items;
+  }
+
+  formatDiffCodeHtml(text = "", spans = null, spanMode = "modify") {
+    if (spans && spans.length > 0 && text.length <= 2000) {
+      return JsHighlighter.renderDiffSpans(spans, spanMode);
+    }
+    if (text.length > 2000) {
+      // Avoid regex backtracking / sluggish DOM spans on massive single-line script strings
+      return this.escapeHtml(text);
+    }
+    return JsHighlighter.highlightLine(text);
   }
 
   /**
    * Side-by-Side Split View with Line-by-Line Merging Controls
    */
-  renderSplitView(container, diff, leftText, rightText) {
-    const leftVal = Validator.validateJs(leftText);
-    const rightVal = Validator.validateJs(rightText);
+  renderSplitView(container, diff, leftText, rightText, isFullJson = false) {
+    const leftVal = isFullJson ? Validator.validateJson(leftText) : Validator.validateJs(leftText);
+    const rightVal = isFullJson ? Validator.validateJson(rightText) : Validator.validateJs(rightText);
+    const valLabel = isFullJson ? "JSON" : "JS";
+    const leftPaneTitle = this.leftTitleLabel || (isFullJson ? "Base / Original JSON" : "Old / Base JSON Script");
+    const rightPaneTitle = this.rightTitleLabel || (isFullJson ? "Target / Modified JSON" : "New / Updated JSON Script");
+    const items = this.buildVisibleItems(diff.alignedRows);
 
     container.innerHTML = `
       <div class="split-diff-container">
@@ -510,18 +761,24 @@ export class DiffModal {
         <div class="diff-pane diff-pane-left">
           <div class="pane-header">
             <div class="pane-title-group">
-              <span class="pane-title">Old / Base JSON Script</span>
+              <span class="pane-title">${this.escapeHtml(leftPaneTitle)}</span>
               <span class="tag-role">Receiving Merged Lines</span>
-              <span class="val-pill ${leftVal.valid ? "pill-valid" : "pill-error"}" title="${leftVal.valid ? "Valid JavaScript syntax" : this.escapeHtml(leftVal.fixSuggestion || leftVal.message)}">
-                ${leftVal.valid ? "✓ Valid JS" : `✖ JS Error (L${leftVal.line})`}
+              <span class="val-pill ${leftVal.valid ? "pill-valid" : "pill-error"}" title="${leftVal.valid ? `Valid ${valLabel} syntax` : this.escapeHtml(leftVal.fixSuggestion || leftVal.message)}">
+                ${leftVal.valid ? `✓ Valid ${valLabel}` : `✖ ${valLabel} Error (L${leftVal.line})`}
               </span>
             </div>
             <span class="pane-lines">${diff.stats.leftTotal} lines</span>
           </div>
           <div class="diff-scroll" id="scrollLeft">
             <div class="diff-rows" id="rowsLeft">
-              ${diff.alignedRows
-                .map((row, idx) => {
+              ${items
+                .map(item => {
+                  if (item.kind === "collapsed") {
+                    return `<div class="diff-collapsed-row" data-range="${item.rangeId}" title="Click to expand hidden unchanged lines">
+                      <button class="btn-expand-collapsed" data-range="${item.rangeId}">⋯ Show ${item.count} unchanged lines (L${item.start + 1}–L${item.end + 1})</button>
+                    </div>`;
+                  }
+                  const { row, idx } = item;
                   const left = row.left;
                   if (left.isPad) {
                     return `<div class="diff-row row-pad" data-row="${idx}">
@@ -530,10 +787,7 @@ export class DiffModal {
                     </div>`;
                   }
                   const rowClass = row.type === "delete" ? "row-del" : row.type === "modify" ? "row-mod" : "row-eq";
-                  const codeHtml =
-                    row.type === "modify" && left.spans
-                      ? JsHighlighter.renderDiffSpans(left.spans, "modify")
-                      : JsHighlighter.highlightLine(left.text);
+                  const codeHtml = this.formatDiffCodeHtml(left.text, row.type === "modify" ? left.spans : null, "modify");
 
                   return `<div class="diff-row ${rowClass}" data-row="${idx}">
                     <div class="line-num">${left.lineNum}</div>
@@ -552,8 +806,12 @@ export class DiffModal {
           </div>
           <div class="diff-scroll gutter-scroll" id="scrollGutter">
             <div class="gutter-rows">
-              ${diff.alignedRows
-                .map((row, idx) => {
+              ${items
+                .map(item => {
+                  if (item.kind === "collapsed") {
+                    return `<div class="gutter-collapsed-row" data-range="${item.rangeId}">⋯</div>`;
+                  }
+                  const { row, idx } = item;
                   if (row.type === "equal") {
                     return `<div class="gutter-row gutter-eq" data-row="${idx}"></div>`;
                   }
@@ -590,10 +848,10 @@ export class DiffModal {
         <div class="diff-pane diff-pane-right">
           <div class="pane-header">
             <div class="pane-title-group">
-              <span class="pane-title">New / Updated JSON Script</span>
+              <span class="pane-title">${this.escapeHtml(rightPaneTitle)}</span>
               <span class="tag-role">Source of Changes</span>
-              <span class="val-pill ${rightVal.valid ? "pill-valid" : "pill-error"}" title="${rightVal.valid ? "Valid JavaScript syntax" : this.escapeHtml(rightVal.fixSuggestion || rightVal.message)}">
-                ${rightVal.valid ? "✓ Valid JS" : `✖ JS Error (L${rightVal.line})`}
+              <span class="val-pill ${rightVal.valid ? "pill-valid" : "pill-error"}" title="${rightVal.valid ? `Valid ${valLabel} syntax` : this.escapeHtml(rightVal.fixSuggestion || rightVal.message)}">
+                ${rightVal.valid ? `✓ Valid ${valLabel}` : `✖ ${valLabel} Error (L${rightVal.line})`}
               </span>
             </div>
             <div class="pane-actions">
@@ -603,8 +861,14 @@ export class DiffModal {
           </div>
           <div class="diff-scroll" id="scrollRight">
             <div class="diff-rows" id="rowsRight">
-              ${diff.alignedRows
-                .map((row, idx) => {
+              ${items
+                .map(item => {
+                  if (item.kind === "collapsed") {
+                    return `<div class="diff-collapsed-row" data-range="${item.rangeId}" title="Click to expand hidden unchanged lines">
+                      <button class="btn-expand-collapsed" data-range="${item.rangeId}">⋯ Show ${item.count} unchanged lines</button>
+                    </div>`;
+                  }
+                  const { row, idx } = item;
                   const right = row.right;
                   if (right.isPad) {
                     return `<div class="diff-row row-pad" data-row="${idx}">
@@ -613,10 +877,7 @@ export class DiffModal {
                     </div>`;
                   }
                   const rowClass = row.type === "insert" ? "row-add" : row.type === "modify" ? "row-mod" : "row-eq";
-                  const codeHtml =
-                    row.type === "modify" && right.spans
-                      ? JsHighlighter.renderDiffSpans(right.spans, "modify")
-                      : JsHighlighter.highlightLine(right.text);
+                  const codeHtml = this.formatDiffCodeHtml(right.text, row.type === "modify" ? right.spans : null, "modify");
 
                   return `<div class="diff-row ${rowClass}" data-row="${idx}">
                     <div class="line-num">${right.lineNum}</div>
@@ -639,6 +900,21 @@ export class DiffModal {
       });
     });
 
+    container.querySelectorAll(".btn-expand-collapsed").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const rangeId = btn.dataset.range;
+        this.expandedRanges.add(rangeId);
+        const scrollTop = container.querySelector("#scrollLeft")?.scrollTop || 0;
+        this.renderCurrentScript();
+        const scL = container.querySelector("#scrollLeft");
+        const scG = container.querySelector("#scrollGutter");
+        const scR = container.querySelector("#scrollRight");
+        if (scL) scL.scrollTop = scrollTop;
+        if (scG) scG.scrollTop = scrollTop;
+        if (scR) scR.scrollTop = scrollTop;
+      });
+    });
+
     container.querySelector("#btnSwitchToEdit")?.addEventListener("click", () => {
       this.switchViewMode("edit");
     });
@@ -650,7 +926,7 @@ export class DiffModal {
     const row = this.currentDiff.alignedRows[rowIdx];
     if (row.type === "equal") return;
 
-    const { leftText, rightText } = this.getCurrentScripts();
+    const { isFullJson, leftText, rightText } = this.getCurrentScripts();
 
     this.mergeHistory.push({
       scriptKey: this.activeScriptKey,
@@ -660,8 +936,15 @@ export class DiffModal {
 
     const merged = DiffEngine.mergeLine(leftText, rightText, row, direction);
 
-    this.modifiedLeftScripts.set(this.activeScriptKey, merged.textLeft);
-    this.modifiedRightScripts.set(this.activeScriptKey, merged.textRight);
+    if (isFullJson) {
+      this.leftFullJsonText = merged.textLeft;
+      this.rightFullJsonText = merged.textRight;
+      this.fullJsonModified = true;
+      this.syncParsedObjectsFromFullJson();
+    } else {
+      this.modifiedLeftScripts.set(this.activeScriptKey, merged.textLeft);
+      this.modifiedRightScripts.set(this.activeScriptKey, merged.textRight);
+    }
 
     this.renderScriptTabs();
     this.renderCurrentScript();
@@ -677,7 +960,7 @@ export class DiffModal {
   }
 
   mergeAllLines(direction = "to-left") {
-    const { leftText, rightText } = this.getCurrentScripts();
+    const { isFullJson, leftText, rightText } = this.getCurrentScripts();
     if (leftText === rightText) {
       this.showToast("Both sides are already 100% identical!");
       return;
@@ -691,8 +974,15 @@ export class DiffModal {
 
     const merged = DiffEngine.mergeAll(leftText, rightText, direction);
 
-    this.modifiedLeftScripts.set(this.activeScriptKey, merged.textLeft);
-    this.modifiedRightScripts.set(this.activeScriptKey, merged.textRight);
+    if (isFullJson) {
+      this.leftFullJsonText = merged.textLeft;
+      this.rightFullJsonText = merged.textRight;
+      this.fullJsonModified = true;
+      this.syncParsedObjectsFromFullJson();
+    } else {
+      this.modifiedLeftScripts.set(this.activeScriptKey, merged.textLeft);
+      this.modifiedRightScripts.set(this.activeScriptKey, merged.textRight);
+    }
 
     this.renderScriptTabs();
     this.renderCurrentScript();
@@ -704,8 +994,14 @@ export class DiffModal {
     if (this.mergeHistory.length === 0) return;
 
     const lastState = this.mergeHistory.pop();
-    this.modifiedLeftScripts.set(lastState.scriptKey, lastState.leftText);
-    this.modifiedRightScripts.set(lastState.scriptKey, lastState.rightText);
+    if (lastState.scriptKey === FULL_JSON_KEY) {
+      this.leftFullJsonText = lastState.leftText;
+      this.rightFullJsonText = lastState.rightText;
+      this.syncParsedObjectsFromFullJson();
+    } else {
+      this.modifiedLeftScripts.set(lastState.scriptKey, lastState.leftText);
+      this.modifiedRightScripts.set(lastState.scriptKey, lastState.rightText);
+    }
 
     this.renderScriptTabs();
     this.renderCurrentScript();
@@ -714,38 +1010,62 @@ export class DiffModal {
   }
 
   resetCurrentScript() {
-    this.modifiedLeftScripts.delete(this.activeScriptKey);
-    this.modifiedRightScripts.delete(this.activeScriptKey);
+    if (this.activeScriptKey === FULL_JSON_KEY) {
+      this.leftFullJsonText = this.initialLeftFullJsonText;
+      this.rightFullJsonText = this.initialRightFullJsonText;
+      this.fullJsonModified = false;
+      this.syncParsedObjectsFromFullJson();
+    } else {
+      this.modifiedLeftScripts.delete(this.activeScriptKey);
+      this.modifiedRightScripts.delete(this.activeScriptKey);
+    }
     this.mergeHistory = [];
+    this.expandedRanges.clear();
 
     this.renderScriptTabs();
     this.renderCurrentScript();
 
-    this.showToast(`↺ Reset ${this.activeScriptKey} to initial JSON state`);
+    const label = this.activeScriptKey === FULL_JSON_KEY ? "Full JSON" : this.activeScriptKey;
+    this.showToast(`↺ Reset ${label} to initial JSON state`);
   }
 
-  renderUnifiedView(container, diff) {
+  syncParsedObjectsFromFullJson() {
+    try {
+      this.leftJsonObj = JSON.parse(this.leftFullJsonText);
+      this.leftBlocks = JsonEngine.findAllClientScripts(this.leftJsonObj);
+    } catch (e) {}
+    try {
+      this.rightJsonObj = JSON.parse(this.rightFullJsonText);
+      this.rightBlocks = JsonEngine.findAllClientScripts(this.rightJsonObj);
+    } catch (e) {}
+  }
+
+  renderUnifiedView(container, diff, isFullJson = false) {
+    const items = this.buildVisibleItems(diff.alignedRows);
     container.innerHTML = `
       <div class="unified-diff-container">
         <div class="diff-scroll" id="scrollUnified">
           <div class="diff-rows unified-rows">
-            ${diff.alignedRows
-              .map((row, idx) => {
+            ${items
+              .map(item => {
+                if (item.kind === "collapsed") {
+                  return `<div class="diff-collapsed-row" data-range="${item.rangeId}">
+                    <button class="btn-expand-collapsed" data-range="${item.rangeId}">⋯ Show ${item.count} unchanged lines (L${item.start + 1}–L${item.end + 1})</button>
+                  </div>`;
+                }
+                const { row, idx } = item;
                 if (row.type === "equal") {
                   return `<div class="diff-row row-eq" data-row="${idx}">
                     <div class="line-num">${row.left.lineNum}</div>
                     <div class="line-num">${row.right.lineNum}</div>
                     <div class="diff-sign"> </div>
-                    <div class="line-code"><pre><code>${JsHighlighter.highlightLine(row.left.text)}</code></pre></div>
+                    <div class="line-code"><pre><code>${this.formatDiffCodeHtml(row.left.text)}</code></pre></div>
                   </div>`;
                 }
 
                 let html = "";
                 if (row.type === "delete" || row.type === "modify") {
-                  const leftCode =
-                    row.type === "modify" && row.left.spans
-                      ? JsHighlighter.renderDiffSpans(row.left.spans, "del")
-                      : JsHighlighter.highlightLine(row.left.text);
+                  const leftCode = this.formatDiffCodeHtml(row.left.text, row.type === "modify" ? row.left.spans : null, "del");
 
                   html += `<div class="diff-row row-del" data-row="${idx}">
                     <div class="line-num">${row.left.lineNum}</div>
@@ -756,10 +1076,7 @@ export class DiffModal {
                 }
 
                 if (row.type === "insert" || row.type === "modify") {
-                  const rightCode =
-                    row.type === "modify" && row.right.spans
-                      ? JsHighlighter.renderDiffSpans(row.right.spans, "ins")
-                      : JsHighlighter.highlightLine(row.right.text);
+                  const rightCode = this.formatDiffCodeHtml(row.right.text, row.type === "modify" ? row.right.spans : null, "ins");
 
                   html += `<div class="diff-row row-add" data-row="${idx}">
                     <div class="line-num"></div>
@@ -776,14 +1093,114 @@ export class DiffModal {
         </div>
       </div>
     `;
+
+    container.querySelectorAll(".btn-expand-collapsed").forEach(btn => {
+      btn.addEventListener("click", () => {
+        this.expandedRanges.add(btn.dataset.range);
+        const scrollTop = container.querySelector("#scrollUnified")?.scrollTop || 0;
+        this.renderCurrentScript();
+        const sc = container.querySelector("#scrollUnified");
+        if (sc) sc.scrollTop = scrollTop;
+      });
+    });
+  }
+
+  applyDiffSearch(scrollToFirst = true) {
+    const countEl = this.container.querySelector("#modalSearchCount");
+    const q = (this.searchQuery || "").trim().toLowerCase();
+    this.container.querySelectorAll(".diff-row.row-search-hit").forEach(el => el.classList.remove("row-search-hit"));
+    this.searchMatches = [];
+    this.searchMatchIdx = -1;
+
+    if (!q || !this.currentDiff) {
+      if (countEl) countEl.textContent = "";
+      return;
+    }
+
+    // Find all matching row indices in the full diff
+    for (let i = 0; i < this.currentDiff.alignedRows.length; i++) {
+      const r = this.currentDiff.alignedRows[i];
+      const hayL = (r.left?.text || "").toLowerCase();
+      const hayR = (r.right?.text || "").toLowerCase();
+      if (hayL.includes(q) || hayR.includes(q)) {
+        this.searchMatches.push(i);
+      }
+    }
+
+    if (this.searchMatches.length === 0) {
+      if (countEl) countEl.textContent = "0 found";
+      return;
+    }
+
+    this.searchMatchIdx = 0;
+    if (countEl) countEl.textContent = `1/${this.searchMatches.length}`;
+    if (scrollToFirst) {
+      this.revealSearchMatchRow(this.searchMatches[0]);
+    } else {
+      this.highlightVisibleSearchMatches();
+    }
+  }
+
+  stepDiffSearch(dir = 1) {
+    if (!this.searchMatches.length) {
+      this.applyDiffSearch(true);
+      return;
+    }
+    this.searchMatchIdx = (this.searchMatchIdx + dir + this.searchMatches.length) % this.searchMatches.length;
+    const countEl = this.container.querySelector("#modalSearchCount");
+    if (countEl) countEl.textContent = `${this.searchMatchIdx + 1}/${this.searchMatches.length}`;
+    this.revealSearchMatchRow(this.searchMatches[this.searchMatchIdx]);
+  }
+
+  revealSearchMatchRow(rowIdx) {
+    // Expand collapsed range containing rowIdx if needed
+    let targetEl = this.container.querySelector(`.diff-row[data-row="${rowIdx}"]`);
+    if (!targetEl && this.collapseUnchanged) {
+      this.container.querySelectorAll(".diff-collapsed-row").forEach(ph => {
+        const parts = (ph.dataset.range || "").split("-").map(Number);
+        if (parts.length === 2 && rowIdx >= parts[0] && rowIdx <= parts[1]) {
+          this.expandedRanges.add(ph.dataset.range);
+        }
+      });
+      this.renderCurrentScript();
+    }
+    this.highlightVisibleSearchMatches();
+    const els = this.container.querySelectorAll(`.diff-row[data-row="${rowIdx}"]`);
+    if (els.length > 0) {
+      els[0].scrollIntoView({ behavior: "smooth", block: "center" });
+      els.forEach(el => el.classList.add("row-search-active"));
+    }
+  }
+
+  highlightVisibleSearchMatches() {
+    this.container.querySelectorAll(".diff-row.row-search-hit, .diff-row.row-search-active").forEach(el => {
+      el.classList.remove("row-search-hit", "row-search-active");
+    });
+    for (const idx of this.searchMatches) {
+      this.container.querySelectorAll(`.diff-row[data-row="${idx}"]`).forEach(el => {
+        el.classList.add("row-search-hit");
+      });
+    }
   }
 
   /**
-   * Real IDE CodeMirror Editor View with Full JS Syntax, Indentation & Colors
+   * Real IDE CodeMirror/Monaco Editor View with Fold All, Unfold All, Search & Real-Time Diagnostics
    */
   renderCodeMirrorEditor(container, leftText, rightText) {
-    const isJsMode = this.editorSubMode === "js";
-    const initialCode = isJsMode ? rightText : JSON.stringify(this.rightJsonObj, null, 2);
+    this.disposeActiveEditors();
+
+    const isFullTab = this.activeScriptKey === FULL_JSON_KEY;
+    const hasAnyScripts = this.leftBlocks.length > 0 || this.rightBlocks.length > 0;
+    if (isFullTab && this.editorSubMode === "js") {
+      this.editorSubMode = "json";
+    }
+    const isJsMode = this.editorSubMode === "js" && !isFullTab;
+    const editingLeftSide = this.singleSideMode === "left" || this.applyTargetOverride === "left";
+    const initialCode = isJsMode
+      ? editingLeftSide ? leftText : rightText
+      : editingLeftSide ? this.leftFullJsonText : this.rightFullJsonText;
+
+    const scriptTabLabel = isFullTab ? (hasAnyScripts ? "JavaScript Script Editor" : "No Clientscripts") : `JavaScript (${this.activeScriptKey})`;
 
     container.innerHTML = `
       <div class="live-ide-container">
@@ -795,19 +1212,23 @@ export class DiffModal {
               <span>◀ Done Editing &bull; Back to Diff State</span>
             </button>
             <div class="editor-type-pills">
+              ${hasAnyScripts ? `
               <button class="editor-type-btn ${isJsMode ? "active" : ""}" id="btnEditJsMode">
-                JavaScript Script Editor (${this.activeScriptKey})
-              </button>
+                ${this.escapeHtml(scriptTabLabel)}
+              </button>` : ""}
               <button class="editor-type-btn ${!isJsMode ? "active" : ""}" id="btnEditJsonMode">
                 Full JSON Bundle Editor
               </button>
             </div>
             <div class="editor-val-badge val-ok" id="editorValBadge" title="Click to view syntax diagnostics">
-              ✓ Valid JavaScript
+              ✓ Valid ${isJsMode ? "JavaScript" : "JSON"}
             </div>
           </div>
           <div class="subnav-right">
             <span class="editor-cursor-pos" id="editorCursorPos">Ln 1, Col 1</span>
+            <button class="btn-tool" id="btnModalIdeFoldAll" title="Fold all code blocks">Fold All</button>
+            <button class="btn-tool" id="btnModalIdeUnfoldAll" title="Unfold all code blocks">Unfold All</button>
+            <button class="btn-tool" id="btnModalIdeSearch" title="Find in editor (Cmd/Ctrl+F)">Search</button>
             <button class="btn-tool" id="btnFormatEditorCode" title="Auto-indent and format code">
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9" y1="20" x2="15" y2="20"/><line x1="12" y1="4" x2="12" y2="20"/></svg>
               Auto-Format
@@ -818,14 +1239,14 @@ export class DiffModal {
         <!-- Real-time Diagnostics Drawer -->
         <div class="editor-diagnostics-drawer hidden" id="editorDiagDrawer"></div>
 
-        <!-- CodeMirror Mount Area -->
+        <!-- Editor Mount Area -->
         <div class="codemirror-mount" id="modalCodeMirrorMount"></div>
 
         <!-- Editor Bottom Status Bar -->
         <div class="editor-bottom-bar">
           <div class="editor-hint">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
-            <span><strong>VS Code Monaco IDE</strong>: Real IntelliSense, Code Folding, Minimap, Rainbow Brackets &amp; Command Palette (<strong>F1</strong> / <strong>Cmd+Shift+P</strong>).</span>
+            <span><strong>IDE Editor</strong>: Syntax Checking, Code Folding, Search (<strong>Cmd/Ctrl+F</strong>), Rainbow Brackets &amp; Auto-Format.</span>
           </div>
           <button class="btn-done-review" id="btnBottomDoneReview">
             <span>✓ Done Editing ➔ Return to Diff</span>
@@ -847,14 +1268,30 @@ export class DiffModal {
           ? this.cmModalInstance.getValue()
           : "";
 
-      if (this.editorSubMode === "js") {
-        this.modifiedRightScripts.set(this.activeScriptKey, val);
+      if (this.editorSubMode === "js" && !isFullTab) {
+        if (editingLeftSide) {
+          this.modifiedLeftScripts.set(this.activeScriptKey, val);
+        } else {
+          this.modifiedRightScripts.set(this.activeScriptKey, val);
+        }
         const diag = Validator.validateJs(val);
         this.updateEditorDiagnostics(diag);
       } else {
+        this.fullJsonModified = true;
+        if (editingLeftSide) {
+          this.leftFullJsonText = val;
+        } else {
+          this.rightFullJsonText = val;
+        }
         try {
-          this.rightJsonObj = JSON.parse(val);
-          this.rightBlocks = JsonEngine.findAllClientScripts(this.rightJsonObj);
+          const parsed = JSON.parse(val);
+          if (editingLeftSide) {
+            this.leftJsonObj = parsed;
+            this.leftBlocks = JsonEngine.findAllClientScripts(parsed);
+          } else {
+            this.rightJsonObj = parsed;
+            this.rightBlocks = JsonEngine.findAllClientScripts(parsed);
+          }
         } catch (e) {}
         const diag = Validator.validateJson(val);
         this.updateEditorDiagnostics(diag);
@@ -870,10 +1307,10 @@ export class DiffModal {
         value: initialCode,
         language: isJsMode ? "javascript" : "json",
         tabSize: isJsMode ? 4 : 2,
-        minimap: true
+        minimap: true,
+        onPaste: () => setTimeout(() => runValidation(), 20)
       });
 
-      // Cursor position tracking
       this.modalMonacoInstance.onDidChangeCursorPosition(e => {
         const posEl = container.querySelector("#editorCursorPos");
         if (posEl) posEl.textContent = `Ln ${e.position.lineNumber}, Col ${e.position.column}`;
@@ -882,17 +1319,18 @@ export class DiffModal {
       let debounceTimer = null;
       this.modalMonacoInstance.onDidChangeModelContent(() => {
         clearTimeout(debounceTimer);
-        debounceTimer = setTimeout(() => runValidation(), 150);
+        debounceTimer = setTimeout(() => runValidation(), 120);
       });
 
       setTimeout(() => {
-        this.modalMonacoInstance.layout();
+        this.modalMonacoInstance?.layout();
         runValidation();
       }, 60);
     }
     // 2. Fallback: Initialize CodeMirror if Monaco is not available
     else if (typeof CodeMirror !== "undefined") {
       this.modalMonacoInstance = null;
+      const braceFold = CodeMirror.fold?.brace;
       this.cmModalInstance = CodeMirror(mountEl, {
         value: initialCode,
         mode: isJsMode ? "javascript" : { name: "javascript", json: true },
@@ -901,13 +1339,22 @@ export class DiffModal {
         matchBrackets: true,
         autoCloseBrackets: true,
         styleActiveLine: true,
-        indentUnit: 4,
-        tabSize: 4,
+        foldGutter: true,
+        gutters: ["CodeMirror-linenumbers", "CodeMirror-foldgutter"],
+        foldOptions: braceFold && !isJsMode ? { rangeFinder: braceFold } : undefined,
+        extraKeys: {
+          "Ctrl-Q": cm => cm.foldCode && cm.foldCode(cm.getCursor()),
+          "Ctrl-F": "findPersistent",
+          "Cmd-F": "findPersistent",
+          "Ctrl-G": "jumpToLine",
+          "Cmd-G": "jumpToLine"
+        },
+        indentUnit: isJsMode ? 4 : 2,
+        tabSize: isJsMode ? 4 : 2,
         indentWithTabs: false,
         lineWrapping: false
       });
 
-      // Cursor position tracking
       this.cmModalInstance.on("cursorActivity", () => {
         const pos = this.cmModalInstance.getCursor();
         const posEl = container.querySelector("#editorCursorPos");
@@ -917,28 +1364,53 @@ export class DiffModal {
       let debounceTimer = null;
       this.cmModalInstance.on("change", () => {
         clearTimeout(debounceTimer);
-        debounceTimer = setTimeout(() => runValidation(), 150);
+        debounceTimer = setTimeout(() => runValidation(), 120);
       });
 
       setTimeout(() => {
-        this.cmModalInstance.refresh();
+        this.cmModalInstance?.refresh();
         runValidation();
       }, 60);
     } else {
-      // Fallback textarea if no editor scripts are loaded
-      mountEl.innerHTML = `<textarea class="code-textarea" id="scriptTextarea" style="width:100%;height:100%;">${initialCode}</textarea>`;
+      mountEl.innerHTML = `<textarea class="code-textarea" id="scriptTextarea" style="width:100%;height:100%;">${this.escapeHtml(initialCode)}</textarea>`;
       const ta = mountEl.querySelector("#scriptTextarea");
       ta.addEventListener("input", () => {
-        this.modifiedRightScripts.set(this.activeScriptKey, ta.value);
+        runValidation(ta.value);
       });
     }
+
+    // Modal IDE Fold All / Unfold All / Search buttons
+    container.querySelector("#btnModalIdeFoldAll")?.addEventListener("click", () => {
+      if (this.modalMonacoInstance) {
+        monacoManager.runAction(this.modalMonacoInstance, "editor.foldAll");
+      } else if (this.cmModalInstance && typeof CodeMirror !== "undefined" && CodeMirror.commands.foldAll) {
+        CodeMirror.commands.foldAll(this.cmModalInstance);
+      }
+    });
+
+    container.querySelector("#btnModalIdeUnfoldAll")?.addEventListener("click", () => {
+      if (this.modalMonacoInstance) {
+        monacoManager.runAction(this.modalMonacoInstance, "editor.unfoldAll");
+      } else if (this.cmModalInstance && typeof CodeMirror !== "undefined" && CodeMirror.commands.unfoldAll) {
+        CodeMirror.commands.unfoldAll(this.cmModalInstance);
+      }
+    });
+
+    container.querySelector("#btnModalIdeSearch")?.addEventListener("click", () => {
+      if (this.modalMonacoInstance) {
+        monacoManager.runAction(this.modalMonacoInstance, "actions.find");
+      } else if (this.cmModalInstance && typeof CodeMirror !== "undefined" && CodeMirror.commands.findPersistent) {
+        // Note: do NOT call cm.focus() after findPersistent because dialog closes on blur!
+        CodeMirror.commands.findPersistent(this.cmModalInstance);
+      }
+    });
 
     // Return to Diff actions with syntax check warning
     const returnToDiffHandler = () => {
       if (this.currentEditorDiag && !this.currentEditorDiag.valid) {
         const proceed = window.confirm(
-          `⚠️ JavaScript Syntax Warning:\n` +
-          `Your edited script contains a syntax error at Line ${this.currentEditorDiag.line || 1}, Col ${this.currentEditorDiag.column || 1}:\n` +
+          `⚠️ ${isJsMode ? "JavaScript" : "JSON"} Syntax Warning:\n` +
+          `Your edited code contains a syntax error at Line ${this.currentEditorDiag.line || 1}, Col ${this.currentEditorDiag.column || 1}:\n` +
           `"${this.currentEditorDiag.message}"\n\n` +
           `Fix suggestion: ${this.currentEditorDiag.fixSuggestion || "Please fix syntax before committing."}\n\n` +
           `Do you want to proceed back to Diff state anyway?`
@@ -957,10 +1429,14 @@ export class DiffModal {
 
     // Switch between JS mode and JSON mode
     container.querySelector("#btnEditJsMode")?.addEventListener("click", () => {
-      if (this.editorSubMode !== "js") {
-        this.editorSubMode = "js";
-        this.renderCurrentScript();
+      if (this.activeScriptKey === FULL_JSON_KEY) {
+        const block = this.rightBlocks[0] || this.leftBlocks[0];
+        const firstKey = block ? Object.keys(block.scripts).find(k => block.scripts[k].exists) : null;
+        if (firstKey) this.activeScriptKey = firstKey;
       }
+      this.editorSubMode = "js";
+      this.renderScriptTabs();
+      this.renderCurrentScript();
     });
 
     container.querySelector("#btnEditJsonMode")?.addEventListener("click", () => {
@@ -973,23 +1449,34 @@ export class DiffModal {
     // Auto-Format within editor
     container.querySelector("#btnFormatEditorCode")?.addEventListener("click", () => {
       if (this.modalMonacoInstance) {
-        this.modalMonacoInstance.getAction("editor.action.formatDocument")?.run();
-        this.showToast("⚡ Formatted code with VS Code Monaco engine!");
-        return;
+        if (this.editorSubMode === "json") {
+          try {
+            const formatted = JSON.stringify(JSON.parse(this.modalMonacoInstance.getValue()), null, 2);
+            this.modalMonacoInstance.setValue(formatted);
+            runValidation(formatted);
+            this.showToast("⚡ Formatted JSON!");
+            return;
+          } catch (e) {}
+        } else {
+          const formatted = JsBeautifier.beautify(this.modalMonacoInstance.getValue(), 4);
+          this.modalMonacoInstance.setValue(formatted);
+          runValidation(formatted);
+          this.showToast("⚡ Formatted JavaScript!");
+          return;
+        }
       }
       if (!this.cmModalInstance) return;
       const val = this.cmModalInstance.getValue();
-      let formatted = "";
+      let formatted = val;
       if (this.editorSubMode === "js") {
         formatted = JsBeautifier.beautify(val, 4);
       } else {
         try {
           formatted = JSON.stringify(JSON.parse(val), null, 2);
-        } catch (e) {
-          formatted = val;
-        }
+        } catch (e) {}
       }
       this.cmModalInstance.setValue(formatted);
+      runValidation(formatted);
       this.showToast("⚡ Formatted code in editor!");
     });
   }
@@ -1028,7 +1515,18 @@ export class DiffModal {
     }
 
     const hunk = this.currentDiff.hunks[this.currentHunkIndex];
-    const targetRow = this.container.querySelector(`.diff-row[data-row="${hunk.startRow}"]`);
+    let targetRow = this.container.querySelector(`.diff-row[data-row="${hunk.startRow}"]`);
+    if (!targetRow && this.collapseUnchanged) {
+      this.container.querySelectorAll(".diff-collapsed-row").forEach(ph => {
+        const parts = (ph.dataset.range || "").split("-").map(Number);
+        if (parts.length === 2 && hunk.startRow >= parts[0] && hunk.startRow <= parts[1]) {
+          this.expandedRanges.add(ph.dataset.range);
+        }
+      });
+      this.renderCurrentScript();
+      targetRow = this.container.querySelector(`.diff-row[data-row="${hunk.startRow}"]`);
+    }
+
     if (targetRow) {
       targetRow.scrollIntoView({ behavior: "smooth", block: "center" });
       targetRow.classList.add("row-highlight-flash");
@@ -1042,7 +1540,20 @@ export class DiffModal {
   }
 
   formatCurrentScript() {
-    const { leftText, rightText } = this.getCurrentScripts();
+    const { isFullJson, leftText, rightText } = this.getCurrentScripts();
+    if (isFullJson) {
+      let formattedLeft = leftText;
+      let formattedRight = rightText;
+      try { formattedLeft = JSON.stringify(JSON.parse(leftText), null, 2); } catch (e) {}
+      try { formattedRight = JSON.stringify(JSON.parse(rightText), null, 2); } catch (e) {}
+      this.leftFullJsonText = formattedLeft;
+      this.rightFullJsonText = formattedRight;
+      this.renderScriptTabs();
+      this.renderCurrentScript();
+      this.showToast("✨ Formatted both JSON bundles cleanly!");
+      return;
+    }
+
     const formattedLeft = JsBeautifier.beautify(leftText, 4);
     const formattedRight = JsBeautifier.beautify(rightText, 4);
 
@@ -1056,81 +1567,122 @@ export class DiffModal {
   }
 
   copyCleanJs() {
-    const { leftText } = this.getCurrentScripts();
-    navigator.clipboard.writeText(leftText).then(() => {
-      this.showToast(`📋 Copied merged readable ${this.activeScriptKey} to clipboard!`);
+    const { isFullJson, leftText, rightText } = this.getCurrentScripts();
+    const toCopy = this.singleSideMode === "right" ? rightText : leftText;
+    navigator.clipboard.writeText(toCopy).then(() => {
+      this.showToast(
+        isFullJson ? "📋 Copied JSON document to clipboard!" : `📋 Copied merged readable ${this.activeScriptKey} to clipboard!`
+      );
     });
   }
 
   applyMergedChanges(target = "both") {
     let baseObj = this.leftJsonObj;
     let targetObj = this.rightJsonObj;
+    let baseRawText = null;
+    let targetRawText = null;
 
-    const leftBlock = this.leftBlocks[this.activeBlockIndex] || this.leftBlocks[0];
-    const rightBlock = this.rightBlocks[this.activeBlockIndex] || this.rightBlocks[0];
+    // 1. Handle Full JSON edits/merges first if Full JSON was directly modified
+    if (this.fullJsonModified || this.activeScriptKey === FULL_JSON_KEY) {
+      const leftSrc =
+        (this.singleSideMode === "left" || this.applyTargetOverride === "left") &&
+        this.leftFullJsonText === this.initialLeftFullJsonText &&
+        this.rightFullJsonText !== this.initialRightFullJsonText
+          ? this.rightFullJsonText
+          : this.leftFullJsonText;
 
-    const allKeys = new Set([
+      if (target === "old" || target === "both") {
+        const diagL = Validator.validateJson(leftSrc);
+        if (!diagL.valid) {
+          const proceed = window.confirm(
+            `⚠️ Base JSON has a syntax error at Line ${diagL.line || 1}: "${diagL.message}". Apply raw text anyway?`
+          );
+          if (!proceed) return false;
+          baseRawText = leftSrc;
+        } else {
+          baseObj = diagL.data;
+          baseRawText = leftSrc;
+        }
+      }
+      if (target === "new" || target === "both") {
+        const diagR = Validator.validateJson(this.rightFullJsonText);
+        if (!diagR.valid) {
+          const proceed = window.confirm(
+            `⚠️ Target JSON has a syntax error at Line ${diagR.line || 1}: "${diagR.message}". Apply raw text anyway?`
+          );
+          if (!proceed) return false;
+          targetRawText = this.rightFullJsonText;
+        } else {
+          targetObj = diagR.data;
+          targetRawText = this.rightFullJsonText;
+        }
+      }
+    }
+
+    // 2. Also apply any per-script edits made in JS script tabs
+    const modifiedScriptKeys = new Set([
       ...this.modifiedLeftScripts.keys(),
       ...this.modifiedRightScripts.keys()
     ]);
 
-    if (allKeys.size === 0) {
-      allKeys.add(this.activeScriptKey);
-    }
+    if (modifiedScriptKeys.size > 0) {
+      const leftBlock = this.leftBlocks[this.activeBlockIndex] || this.leftBlocks[0];
+      const rightBlock = this.rightBlocks[this.activeBlockIndex] || this.rightBlocks[0];
 
-    for (const scriptKey of allKeys) {
-      const mergedCleanJs =
-        this.modifiedLeftScripts.get(scriptKey) ??
-        this.modifiedRightScripts.get(scriptKey) ??
-        (leftBlock?.scripts?.[scriptKey]?.readable || "");
+      for (const scriptKey of modifiedScriptKeys) {
+        const mergedCleanJs =
+          this.modifiedLeftScripts.get(scriptKey) ??
+          this.modifiedRightScripts.get(scriptKey) ??
+          (leftBlock?.scripts?.[scriptKey]?.readable || "");
 
-      // Pre-apply JavaScript syntax safety check
-      if (mergedCleanJs && mergedCleanJs.trim()) {
-        const diag = Validator.validateJs(mergedCleanJs);
-        if (!diag.valid) {
-          const proceed = window.confirm(
-            `⚠️ JavaScript Syntax Alert:\n` +
-            `Script '${scriptKey}' contains a syntax error at Line ${diag.line || 1}, Col ${diag.column || 1} (${diag.errorTitle || "Syntax Error"}):\n` +
-            `"${diag.message}"\n\n` +
-            `How to fix: ${diag.fixSuggestion || "Correct the syntax at the highlighted line."}\n\n` +
-            `Saving broken code may cause runtime failures in production. Do you want to apply anyway?`
-          );
-          if (!proceed) return;
+        if (mergedCleanJs && mergedCleanJs.trim()) {
+          const diag = Validator.validateJs(mergedCleanJs);
+          if (!diag.valid) {
+            const proceed = window.confirm(
+              `⚠️ JavaScript Syntax Alert:\n` +
+              `Script '${scriptKey}' contains a syntax error at Line ${diag.line || 1}, Col ${diag.column || 1} (${diag.errorTitle || "Syntax Error"}):\n` +
+              `"${diag.message}"\n\n` +
+              `How to fix: ${diag.fixSuggestion || "Correct the syntax at the highlighted line."}\n\n` +
+              `Saving broken code may cause runtime failures in production. Do you want to apply anyway?`
+            );
+            if (!proceed) return false;
+          }
         }
-      }
 
-      if (target === "old" || target === "both") {
-        if (leftBlock) {
+        if ((target === "old" || target === "both") && baseObj && leftBlock) {
           const originalHadCrLf = leftBlock.scripts[scriptKey]?.hasCrLf ?? true;
           const res = JsonEngine.updateScript(baseObj, leftBlock.path, scriptKey, mergedCleanJs, {
             lineEndingPreference: this.lineEndingPreference,
-            indentation: 2,
+            indentation: this.leftIndent || 2,
             originalHadCrLf
           });
           baseObj = res.updatedObj;
+          baseRawText = res.updatedJsonString;
         }
-      }
 
-      if (target === "new" || target === "both") {
-        if (rightBlock) {
+        if ((target === "new" || target === "both") && targetObj && rightBlock) {
           const originalHadCrLf = rightBlock.scripts[scriptKey]?.hasCrLf ?? true;
           const res = JsonEngine.updateScript(targetObj, rightBlock.path, scriptKey, mergedCleanJs, {
             lineEndingPreference: this.lineEndingPreference,
-            indentation: 2,
+            indentation: this.rightIndent || 2,
             originalHadCrLf
           });
           targetObj = res.updatedObj;
+          targetRawText = res.updatedJsonString;
         }
       }
     }
 
     this.onApplyCallback({
       baseObj: (target === "old" || target === "both") ? baseObj : null,
-      targetObj: (target === "new" || target === "both") ? targetObj : null
+      targetObj: (target === "new" || target === "both") ? targetObj : null,
+      baseRawText: (target === "old" || target === "both") ? baseRawText : null,
+      targetRawText: (target === "new" || target === "both") ? targetRawText : null
     });
 
     const targetLabel = target === "both" ? "both Base & Target JSONs" : target === "old" ? "Base (Old) JSON" : "Target (New) JSON";
-    this.showToast(`💾 Applied merged changes to ${targetLabel} ready for prod commit!`);
+    this.showToast(`💾 Applied changes to ${targetLabel}!`);
+    return true;
   }
 
   updateEditorDiagnostics(diag) {
@@ -1284,3 +1836,5 @@ export class DiffModal {
     setTimeout(() => toast.classList.remove("visible"), 3200);
   }
 }
+
+DiffModal.FULL_JSON_KEY = FULL_JSON_KEY;

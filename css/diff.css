@@ -865,3 +865,83 @@
   color: #ff7b72;
   border: 1px solid rgba(248, 81, 73, 0.4);
 }
+
+/* In-Modal Diff Search Box */
+.modal-search-box {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background-color: #0b0e14;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  padding: 2px 6px;
+}
+.modal-search-box.hidden {
+  display: none !important;
+}
+.modal-search-input {
+  width: 165px;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: #f0f6fc;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}
+.modal-search-count {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: #8b949e;
+  min-width: 34px;
+  text-align: center;
+}
+.btn-search-step {
+  padding: 1px 5px !important;
+  font-size: 10px !important;
+  height: 20px !important;
+  width: 22px !important;
+}
+
+/* Collapsed identical region row */
+.diff-collapsed-row,
+.gutter-collapsed-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 26px;
+  min-height: 26px;
+  background: rgba(56, 139, 253, 0.08);
+  border-top: 1px dashed #30363d;
+  border-bottom: 1px dashed #30363d;
+  font-size: 11px;
+  color: #79c0ff;
+}
+.btn-expand-collapsed {
+  background: transparent;
+  border: none;
+  color: #79c0ff;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 2px 10px;
+  width: 100%;
+  text-align: center;
+}
+.btn-expand-collapsed:hover {
+  color: #fff;
+  background: rgba(56, 139, 253, 0.16);
+}
+
+/* Diff search match highlight */
+.diff-row.row-search-hit {
+  background-color: rgba(210, 153, 34, 0.18) !important;
+}
+.diff-row.row-search-active {
+  outline: 2px solid #f0b429;
+  outline-offset: -2px;
+  background-color: rgba(210, 153, 34, 0.32) !important;
+}
+
+.script-tab.script-tab-fulljson {
+  border-right: 1px solid #30363d;
+}

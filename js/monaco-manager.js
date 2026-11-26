@@ -15,22 +15,30 @@ export class MonacoManager {
   }
 
   /**
-   * Initializes Monaco AMD loader from CDN with safe cross-origin blob workers
+   * Initializes Monaco AMD loader ONLY after DOM & synchronous vendor scripts (Acorn, CodeMirror)
+   * have finished executing, avoiding any UMD `define.amd` conflict.
    */
   init() {
     if (typeof window === "undefined") return;
 
-    if (window.monaco && window.monaco.editor) {
-      this.isReady = true;
-      this.configureMonacoDefaults();
-      return;
-    }
+    const boot = () => {
+      if (window.monaco && window.monaco.editor) {
+        this.isReady = true;
+        this.configureMonacoDefaults();
+        return;
+      }
 
-    if (typeof window.require !== "undefined" && window.require.config) {
-      this.loadMonacoWithAmd();
+      if (typeof window.require !== "undefined" && window.require.config) {
+        this.loadMonacoWithAmd();
+      } else {
+        this.injectMonacoLoader();
+      }
+    };
+
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", boot, { once: true });
     } else {
-      // Dynamically inject loader if not yet present in HTML
-      this.injectMonacoLoader();
+      setTimeout(boot, 0);
     }
   }
 
@@ -40,7 +48,11 @@ export class MonacoManager {
 
     const existingScript = document.querySelector('script[src*="monaco-editor"]');
     if (existingScript) {
-      existingScript.addEventListener("load", () => this.loadMonacoWithAmd());
+      if (typeof window.require !== "undefined" && window.require.config) {
+        this.loadMonacoWithAmd();
+      } else {
+        existingScript.addEventListener("load", () => this.loadMonacoWithAmd());
+      }
       return;
     }
 
@@ -51,7 +63,7 @@ export class MonacoManager {
       this.loadMonacoWithAmd();
     };
     script.onerror = () => {
-      console.warn("Monaco loader failed to load. Falling back to CodeMirror.");
+      console.warn("Monaco loader failed to load. Using CodeMirror editor.");
       this.isLoading = false;
     };
     document.head.appendChild(script);
@@ -65,7 +77,8 @@ export class MonacoManager {
         }
       });
 
-      // Inline blob workers enable Monaco workers to run on GitHub Pages & localhost without CORS errors
+      // Blob worker URL is more reliable than data: URI in modern browsers & avoids CORS worker errors
+      let workerBlobUrl = null;
       window.MonacoEnvironment = {
         getWorkerUrl: function (workerId, label) {
           const proxyScript = `
@@ -74,7 +87,15 @@ export class MonacoManager {
             };
             importScripts('https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs/base/worker/workerMain.js');
           `;
-          return `data:text/javascript;charset=utf-8,${encodeURIComponent(proxyScript)}`;
+          try {
+            if (!workerBlobUrl) {
+              const blob = new Blob([proxyScript], { type: "application/javascript" });
+              workerBlobUrl = URL.createObjectURL(blob);
+            }
+            return workerBlobUrl;
+          } catch (e) {
+            return `data:text/javascript;charset=utf-8,${encodeURIComponent(proxyScript)}`;
+          }
         }
       };
 
@@ -195,6 +216,65 @@ export class MonacoManager {
     `;
 
     ts.javascriptDefaults.addExtraLib(lowCodeDts, "ts:filename/inojson-lowcode.d.ts");
+
+    // Configure JSON language diagnostics strictly
+    if (window.monaco.languages.json?.jsonDefaults) {
+      window.monaco.languages.json.jsonDefaults.setDiagnosticsOptions({
+        validate: true,
+        allowComments: false,
+        trailingCommas: "error"
+      });
+    }
+
+    // Register synchronous brace/bracket folding provider so Fold All / Unfold All ALWAYS work
+    // immediately for both JSON and JavaScript even without waiting for remote workers
+    if (!this._foldingRegistered && window.monaco.languages.registerFoldingRangeProvider) {
+      this._foldingRegistered = true;
+      const braceRangeProvider = {
+        provideFoldingRanges(model) {
+          const ranges = [];
+          const stack = [];
+          const lineCount = model.getLineCount();
+          const kind = window.monaco.languages.FoldingRangeKind?.Region;
+
+          for (let lineNum = 1; lineNum <= lineCount; lineNum++) {
+            const text = model.getLineContent(lineNum);
+            let inStr = null;
+            for (let c = 0; c < text.length; c++) {
+              const ch = text[c];
+              if (inStr) {
+                if (ch === "\\") { c++; continue; }
+                if (ch === inStr) inStr = null;
+                continue;
+              }
+              if (ch === '"' || ch === "'" || ch === "`") {
+                inStr = ch;
+                continue;
+              }
+              if (ch === "/" && text[c + 1] === "/") break;
+              if (ch === "{" || ch === "[") {
+                stack.push({ line: lineNum, ch });
+              } else if (ch === "}" || ch === "]") {
+                for (let s = stack.length - 1; s >= 0; s--) {
+                  const open = stack[s];
+                  const match = (open.ch === "{" && ch === "}") || (open.ch === "[" && ch === "]");
+                  if (match) {
+                    stack.splice(s, 1);
+                    if (lineNum > open.line) {
+                      ranges.push({ start: open.line, end: lineNum - 1 > open.line ? lineNum - 1 : lineNum, kind });
+                    }
+                    break;
+                  }
+                }
+              }
+            }
+          }
+          return ranges;
+        }
+      };
+      window.monaco.languages.registerFoldingRangeProvider("json", braceRangeProvider);
+      window.monaco.languages.registerFoldingRangeProvider("javascript", braceRangeProvider);
+    }
   }
 
   /**
@@ -220,7 +300,8 @@ export class MonacoManager {
       readOnly = false,
       tabSize = language === "json" ? 2 : 4,
       minimap = true,
-      onChange = null
+      onChange = null,
+      onPaste = null
     } = options;
 
     const editor = window.monaco.editor.create(mountEl, {
@@ -239,6 +320,7 @@ export class MonacoManager {
       glyphMargin: true,
       folding: true,
       foldingHighlight: true,
+      foldingStrategy: "auto",
       showFoldingControls: "always",
       renderLineHighlight: "all",
       matchBrackets: "always",
@@ -259,21 +341,51 @@ export class MonacoManager {
         comments: false,
         strings: true
       },
+      find: {
+        addExtraSpaceOnTop: true,
+        autoFindInSelection: "never",
+        seedSearchStringFromSelection: "always"
+      },
       scrollBeyondLastLine: false,
-      formatOnPaste: true,
-      formatOnType: true,
+      formatOnPaste: false,
+      formatOnType: false,
       contextmenu: true,
       wordWrap: "off",
       padding: { top: 8, bottom: 8 }
     });
 
     if (typeof onChange === "function") {
-      editor.onDidChangeModelContent(() => {
-        onChange(editor.getValue());
+      editor.onDidChangeModelContent(e => {
+        onChange(editor.getValue(), e);
+      });
+    }
+
+    if (typeof onPaste === "function" && editor.onDidPaste) {
+      editor.onDidPaste(e => {
+        onPaste(editor.getValue(), e);
       });
     }
 
     return editor;
+  }
+
+  /**
+   * Reliably execute an editor action (e.g. 'editor.foldAll', 'editor.unfoldAll', 'actions.find')
+   */
+  runAction(editor, actionId) {
+    if (!editor) return false;
+    editor.focus();
+    const action = editor.getAction?.(actionId);
+    if (action) {
+      Promise.resolve(action.run()).catch(() => {});
+      return true;
+    }
+    try {
+      editor.trigger("toolbar", actionId, {});
+      return true;
+    } catch (e) {
+      return false;
+    }
   }
 }
 

@@ -71,6 +71,25 @@
   color: #8b949e !important;
 }
 
+/* Active file diff decorations inside Monaco & CodeMirror */
+.ino-gutter-modified {
+  border-left: 3px solid #388bfd;
+  margin-left: 2px;
+}
+.ino-gutter-added {
+  border-left: 3px solid #2ea043;
+  margin-left: 2px;
+}
+.ino-line-modified-tint {
+  background-color: rgba(56, 139, 253, 0.06);
+}
+.ino-line-added-tint {
+  background-color: rgba(46, 160, 67, 0.06);
+}
+.cm-dirty-line {
+  border-left: 2px solid rgba(56, 139, 253, 0.55);
+}
+
 /* Main Screen CodeMirror & Monaco Panels */
 .cm-panel-mount,
 .monaco-mount {

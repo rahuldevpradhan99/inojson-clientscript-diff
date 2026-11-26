@@ -261,6 +261,51 @@ assert(reparsedFixed.key4 === 20, "Auto-fixed trailing comma");
 assert(!fixRes.fixedText.includes("//"), "Stripped inline comments");
 assert(!fixRes.fixedText.includes("/*"), "Stripped block comments");
 
+// 7.16 IDE Copy-Paste Snippets (Missing Outer Braces & Root Trailing Comma)
+console.log("\n[7.16] Testing IDE Copy-Paste Auto-Fix (Property Fragments & Trailing Comma):");
+const copiedProp = `"clientscripts": {\n  "prescript": "console.log('Warning'); // keep\\r\\nreturn;"\n},`;
+const propDiag = Validator.validateJson(copiedProp);
+assert(propDiag.valid === false, "Detects copied property fragment without outer braces as invalid");
+assert(propDiag.errorTitle.includes("Braces"), `Explains missing outer braces (got: ${propDiag.errorTitle})`);
+assert(propDiag.canAutoFix === true, "Property fragment marked auto-fixable");
+assert(JSON.parse(propDiag.autoFixedText).clientscripts.prescript.includes("console.log('Warning');"), "Auto-fix wraps fragment cleanly without corrupting embedded JS");
+
+const rootComma = `{\n  "name": "Disputes"\n},`;
+const rootCommaDiag = Validator.validateJson(rootComma);
+assert(rootCommaDiag.valid === false, "Detects root trailing comma");
+assert(rootCommaDiag.errorTitle.includes("Trailing Comma"), `Identifies root trailing comma (got: ${rootCommaDiag.errorTitle})`);
+assert(rootCommaDiag.canAutoFix === true && JSON.parse(rootCommaDiag.autoFixedText).name === "Disputes", "Auto-fixes trailing root comma");
+
+// 8. Large 5,500-Line JSON Diff & 95KB Single-Line Word Diff Safety
+console.log("\n[8] Testing 5,500-Line Full JSON Diff & Giant Single-Line OOM Guard:");
+const largeA = [];
+const largeB = [];
+for (let i = 1; i <= 5500; i++) {
+  if (i === 500) {
+    largeA.push(`  "status": "Draft",`);
+    largeB.push(`  "status": "Approved",`);
+  } else if (i === 4282) {
+    largeA.push(`  "postscript": "${"x".repeat(95000)}old",`);
+    largeB.push(`  "postscript": "${"x".repeat(95000)}new",`);
+  } else {
+    largeA.push(`  "field_${i}": ${i},`);
+    largeB.push(`  "field_${i}": ${i},`);
+  }
+}
+const t0 = Date.now();
+const largeDiff = DiffEngine.computeDiff(largeA.join("\n"), largeB.join("\n"));
+const elapsed = Date.now() - t0;
+assert(largeDiff.stats.modifiedLines === 2, `Detected exact 2 modified lines across 5,500 lines (got ${largeDiff.stats.modifiedLines})`);
+assert(elapsed < 1000, `Computed 5,500-line + 95KB-line diff fast in ${elapsed}ms`);
+
+// Sequential full-JSON merge of both lines should make them identical
+let mergedLeft = largeA.join("\n");
+const rightFull = largeB.join("\n");
+for (const row of largeDiff.alignedRows.filter(r => r.type !== "equal").reverse()) {
+  mergedLeft = DiffEngine.mergeLine(mergedLeft, rightFull, row, "to-left").textLeft;
+}
+assert(mergedLeft === rightFull, "Sequential Full JSON line merges produce exact match");
+
 console.log("\n====================================");
 console.log(`Results: ${passed} passed, ${failed} failed`);
 console.log("====================================");

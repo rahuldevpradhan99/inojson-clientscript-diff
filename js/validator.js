@@ -367,12 +367,23 @@ export const Validator = {
     let explanation = "The JSON parser encountered unexpected characters or malformed structure.";
     let fixSuggestion = `Check the syntax at line ${line} and ensure proper quotes and commas.`;
 
-    // Pattern A: Trailing comma before } or ]
+    // Pattern A: Trailing comma before } or ] (or trailing comma at EOF after copied object)
     const beforePos = text.slice(Math.max(0, pos - 20), pos).trim();
     const atPos = text.slice(pos, pos + 20).trim();
     const lineBeforeCol = currentLineText.slice(0, column - 1).trim();
+    const trimmedDoc = text.trim();
 
-    if (
+    if (/^\s*[\{\[][\s\S]*[\}\]]\s*,\s*$/.test(trimmedDoc)) {
+      errorTitle = "Trailing Comma After Copied Root Object";
+      message = "Extra comma ',' at the very end after closing brace/bracket";
+      explanation = "When copying an object block from inside a file or array, a trailing comma ',' after the final '}' or ']' makes standalone JSON invalid.";
+      fixSuggestion = "Remove the trailing comma at the very end, or click '⚡ Auto-Fix JSON'.";
+    } else if (/^\s*"[^"\r\n]+"\s*:\s*/.test(trimmedDoc)) {
+      errorTitle = "Missing Outer Curly Braces { ... } (Copied Property Snippet)";
+      message = "Copied a JSON property ('\"key\": ...') without wrapping outer '{ ... }'";
+      explanation = "Top-level JSON documents must be wrapped in outer curly braces { ... }. Copying a single property like '\"clientscripts\": { ... }' omits those outer braces.";
+      fixSuggestion = "Wrap the pasted block in { ... }, or click '⚡ Auto-Fix JSON' to wrap it automatically.";
+    } else if (
       (atPos.startsWith("}") || atPos.startsWith("]") || currentLineText.trim().startsWith("}") || currentLineText.trim().startsWith("]")) &&
       (beforePos.endsWith(",") || lineBeforeCol.endsWith(",") || /,\s*$/.test(prevLineText) || currentLineText.includes(","))
     ) {
@@ -547,19 +558,49 @@ export const Validator = {
     if (!rawText || !rawText.trim()) return { ok: false, error: "Empty input" };
 
     const appliedFixes = [];
-    let text = rawText;
 
-    // 1. Strip comments (while preserving strings)
+    // Fast path for clean IDE-copied snippets (trailing root comma or unwrapped property block)
+    // so valid escaped strings (with ';', '//', single quotes inside JS) are never altered unnecessarily.
+    const rawTrimmed = rawText.trim();
+    if (/^\s*[\{\[][\s\S]*[\}\]]\s*,\s*$/.test(rawTrimmed)) {
+      const noRootComma = rawTrimmed.replace(/,\s*$/, "");
+      try {
+        const parsed = JSON.parse(noRootComma);
+        return {
+          ok: true,
+          fixedText: JSON.stringify(parsed, null, 2),
+          appliedFixes: ["Removed trailing comma after copied root object"]
+        };
+      } catch (e) {}
+    } else if (/^\s*"[^"\r\n]+"\s*:\s*/.test(rawTrimmed)) {
+      const wrapped = `{\n${rawTrimmed.replace(/,\s*$/, "")}\n}`;
+      try {
+        const parsed = JSON.parse(wrapped);
+        return {
+          ok: true,
+          fixedText: JSON.stringify(parsed, null, 2),
+          appliedFixes: ["Wrapped copied JSON property snippet in outer { ... }"]
+        };
+      } catch (e) {}
+    }
+
+    // Protect existing valid double-quoted strings from accidental mutation during structural fixes
+    const protectedStrings = [];
+    let text = rawText.replace(/"(?:\\[\s\S]|[^"\\\r\n])*"/g, match => {
+      const idx = protectedStrings.length;
+      protectedStrings.push(match);
+      return `\u0000STR_${idx}\u0000`;
+    });
+
+    // 1. Strip comments outside strings (// and /* */)
     let strippedComments = false;
-    // Replace /* ... */
     const noBlock = text.replace(/\/\*[\s\S]*?\*\//g, () => {
       strippedComments = true;
       return "";
     });
-    // Replace // ... (at line end or after whitespace)
-    const noLine = noBlock.replace(/(^|[^\\:])\/\/.*$/gm, (m, prefix) => {
+    const noLine = noBlock.replace(/\/\/.*$/gm, () => {
       strippedComments = true;
-      return prefix;
+      return "";
     });
     if (strippedComments) {
       appliedFixes.push("Stripped JSON comments (// and /* */)");
@@ -568,7 +609,7 @@ export const Validator = {
 
     // 2. Replace semicolons at line ends or before next element with commas
     let fixedSemicolons = false;
-    const semiFixed = text.replace(/;\s*(?=[\r\n]|\s*["'a-zA-Z0-9_$\}\]])/g, () => {
+    const semiFixed = text.replace(/;\s*(?=[\r\n]|\s*[\u0000"'a-zA-Z0-9_$\}\]])/g, () => {
       fixedSemicolons = true;
       return ",";
     });
@@ -619,11 +660,10 @@ export const Validator = {
       text = keyFixed;
     }
 
-    // 6. Fix single quotes to double quotes (for simple strings)
+    // 6. Fix single quotes to double quotes (outside already-valid double-quoted strings)
     let fixedQuotes = false;
     const quotesFixed = text.replace(/'([^'\\]*(?:\\.[^'\\]*)*)'/g, (match, inner) => {
       fixedQuotes = true;
-      // Escape any unescaped double quotes inside
       const escapedInner = inner.replace(/(?<!\\)"/g, '\\"');
       return `"${escapedInner}"`;
     });
@@ -643,10 +683,23 @@ export const Validator = {
       text = commaFixed;
     }
 
-    // 8. Test if the result parses
+    // Restore protected double-quoted strings
+    text = text.replace(/\u0000STR_(\d+)\u0000/g, (m, i) => protectedStrings[Number(i)]);
+
+    // 8. Handle common IDE copy-paste issues after structural fixes
+    const trimmed = text.trim();
+    if (/^\s*[\{\[][\s\S]*[\}\]]\s*,\s*$/.test(trimmed)) {
+      text = trimmed.replace(/,\s*$/, "");
+      appliedFixes.push("Removed trailing comma after copied root object");
+    } else if (/^\s*"[^"\r\n]+"\s*:\s*/.test(trimmed)) {
+      const unwrapped = trimmed.replace(/,\s*$/, "");
+      text = `{\n${unwrapped}\n}`;
+      appliedFixes.push("Wrapped copied JSON property snippet in outer { ... }");
+    }
+
+    // 9. Test if the result parses
     try {
       const parsed = JSON.parse(text);
-      // Re-format cleanly
       const fixedFormatted = JSON.stringify(parsed, null, 2);
       return {
         ok: true,
